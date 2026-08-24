@@ -34,7 +34,7 @@ one.
 | `agent-shell-side-conclude` | `C-c C-q` | Summarise the side conversation into the parent, then close it |
 | `agent-shell-side-dismiss` | `C-c C-k` | Close the side conversation, discarding what it learned |
 | `agent-shell-side-resume` | | Reopen a side conversation that was kept |
-| `agent-shell-side-list` | | Show the side conversations that are open |
+| `agent-shell-side-list` | | Switch to one of the side conversations that are open |
 | `agent-shell-side-describe` | | Echo what this buffer is and how to leave it |
 
 ### Asking about part of an answer
@@ -65,9 +65,13 @@ finishes, fails, or asks for approval, the side conversation's mode line says so
 ### Keeping track of what is open
 
 A side conversation lives until you close it, so they collect quietly.
-`agent-shell-side-list` shows the ones still open, what each was forked from,
-how its parent is doing, and how long it has been sitting there. `RET` switches
-to the one on the line.
+`agent-shell-side-list` offers the ones still open for completion, each labelled
+with what it was forked from, how its parent is doing, and how long it has been
+sitting there. Picking one switches to it.
+
+It covers every side conversation in this Emacs, across parents and projects,
+because that is the scope the problem has. The ones whose parent is already
+gone are the easiest to forget, and they are listed too.
 
 Nothing is closed for you. Codex discards its side thread when you navigate to
 a third thread; that does not port to Emacs, where switching buffers is
