@@ -455,17 +455,59 @@ Returns the subscription token."
        ('clear (agent-shell-side--set-parent-status side-buffer nil))
        (status (agent-shell-side--set-parent-status side-buffer status))))))
 
-(defun agent-shell-side--watch-own-session (side-buffer)
-  "Record SIDE-BUFFER's own session id as soon as the fork reports it."
-  (agent-shell-subscribe-to
-   :shell-buffer side-buffer
-   :event 'session-selected
-   :on-event
-   (lambda (event)
-     (when-let* ((session-id (map-nested-elt event '(:data :session-id))))
-       (when (buffer-live-p side-buffer)
-         (with-current-buffer side-buffer
-           (setq agent-shell-side--session-id-cache session-id)))))))
+(defun agent-shell-side--abandon-fork (side-buffer message)
+  "Close SIDE-BUFFER after its fork failed to start a session.
+
+MESSAGE is what the agent said, repeated so the reason is not guesswork."
+  (let ((parent (agent-shell-side--live-buffer
+                 (buffer-local-value 'agent-shell-side--parent-buffer
+                                     side-buffer))))
+    (when (buffer-live-p side-buffer)
+      (let ((window (get-buffer-window side-buffer)))
+        (kill-buffer side-buffer)
+        (when (and parent (window-live-p window))
+          (set-window-buffer window parent)))))
+  (message (concat "agent-shell-side: the fork did not start a session%s.  "
+                   "A conversation that has not taken a turn yet cannot be "
+                   "forked; send a message in it first")
+           (if message (format " (%s)" message) "")))
+
+(defun agent-shell-side--watch-startup (side-buffer)
+  "Record SIDE-BUFFER's session id, or close it when the fork starts none.
+
+`session/fork' can fail while leaving the shell it was started for
+behind: no session is ever selected, and the buffer takes input that goes
+nowhere.  claude-agent-acp does exactly that when the parent has never
+taken a turn, answering -32002 Resource not found.  A side conversation
+with nothing to talk to is worse than a refusal, so it is closed and the
+reason said out loud.
+
+Only errors before a session exists mean the fork failed.  Once one is
+selected, an error is an ordinary failed request and the shell keeps it."
+  (let ((token nil)
+        (settled nil))
+    (setq token
+          (agent-shell-subscribe-to
+           :shell-buffer side-buffer
+           :on-event
+           (lambda (event)
+             (unless settled
+               (pcase (map-elt event :event)
+                 ('session-selected
+                  (setq settled t)
+                  (agent-shell-side--unsubscribe side-buffer token)
+                  (when-let* ((session-id (map-nested-elt event
+                                                          '(:data :session-id))))
+                    (when (buffer-live-p side-buffer)
+                      (with-current-buffer side-buffer
+                        (setq agent-shell-side--session-id-cache session-id)))))
+                 ('error
+                  (setq settled t)
+                  (agent-shell-side--unsubscribe side-buffer token)
+                  (agent-shell-side--abandon-fork
+                   side-buffer (map-nested-elt event '(:data :message))))
+                 (_ nil))))))
+    token))
 
 
 ;;; Minor mode
@@ -525,7 +567,7 @@ two keys work from either end.  Not meant to be turned on by hand."
     (setq agent-shell-side--parent-buffer parent-buffer)
     (setq agent-shell-side--parent-subscription
           (agent-shell-side--watch-parent side-buffer parent-buffer))
-    (agent-shell-side--watch-own-session side-buffer)
+    (agent-shell-side--watch-startup side-buffer)
     (agent-shell-side-mode 1)
     (add-hook 'kill-buffer-hook #'agent-shell-side--on-side-killed nil t)))
 
@@ -897,16 +939,46 @@ of them when this buffer has no session of its own."
           ((< seconds 86400) (format "%dh" (/ seconds 3600)))
           (t (format "%dd" (/ seconds 86400))))))
 
-(defun agent-shell-side--list-buffers ()
+(defun agent-shell-side--parent-session-id (side-buffer)
+  "Return the session id SIDE-BUFFER was forked from, or nil.
+
+Nil once the parent buffer is gone, which is why a scoped listing cannot
+reach orphans and the unscoped one has to."
+  (when-let* ((parent (agent-shell-side--live-buffer
+                       (buffer-local-value 'agent-shell-side--parent-buffer
+                                           side-buffer))))
+    (agent-shell-side--session-id parent)))
+
+(defun agent-shell-side--current-session-id ()
+  "Return the session a listing from this buffer should be scoped to, or nil.
+
+In a shell, its own session.  In a side conversation, the session it was
+forked from, so the listing shows its siblings rather than only itself.
+Nil anywhere else, which leaves the listing unscoped."
+  (when-let* ((shell (agent-shell-shell-buffer :no-error t :no-create t)))
+    (if (agent-shell-side-buffer-p shell)
+        (agent-shell-side--parent-session-id shell)
+      (agent-shell-side--session-id shell))))
+
+(defun agent-shell-side--list-buffers (&optional parent-session-id)
   "Return the live side conversations, oldest first.
+
+With PARENT-SESSION-ID, only the ones forked from that session.
 
 Oldest first because the one open longest is the one most likely to have
 been forgotten."
-  (sort (seq-filter #'agent-shell-side-buffer-p (buffer-list))
-        (lambda (a b)
-          (time-less-p
-           (or (buffer-local-value 'agent-shell-side--created-at a) 0)
-           (or (buffer-local-value 'agent-shell-side--created-at b) 0)))))
+  (let ((buffers (seq-filter #'agent-shell-side-buffer-p (buffer-list))))
+    (when parent-session-id
+      (setq buffers
+            (seq-filter (lambda (buffer)
+                          (equal (agent-shell-side--parent-session-id buffer)
+                                 parent-session-id))
+                        buffers)))
+    (sort buffers
+          (lambda (a b)
+            (time-less-p
+             (or (buffer-local-value 'agent-shell-side--created-at a) 0)
+             (or (buffer-local-value 'agent-shell-side--created-at b) 0))))))
 
 (defun agent-shell-side--list-label (buffer)
   "Return a one-line description of side conversation BUFFER."
@@ -925,8 +997,10 @@ been forgotten."
                          (float-time (time-subtract (current-time) created))))
               ""))))
 
-(defun agent-shell-side--list-candidates ()
+(defun agent-shell-side--list-candidates (&optional parent-session-id)
   "Return the open side conversations as (LABEL . BUFFER) pairs.
+
+With PARENT-SESSION-ID, only the ones forked from that session.
 
 Labels are made unique before they are offered.  `completing-read'
 answers with a string, so two side conversations sharing a buffer name
@@ -941,25 +1015,42 @@ and a parent would otherwise collapse into one reachable candidate."
                           (format "%s  <%d>" label count)
                         label)
                       buffer)))
-            (agent-shell-side--list-buffers))))
+            (agent-shell-side--list-buffers parent-session-id))))
 
 ;;;###autoload
-(defun agent-shell-side-list ()
+(defun agent-shell-side-list (&optional everywhere)
   "Switch to one of the side conversations that are open.
 
-Lists every side conversation in this Emacs, across parents and projects,
-because that is the scope the problem has: a side conversation lives
-until it is closed, so they collect quietly, and the ones whose parent is
-already gone are the easiest to forget.
+Called from a shell, offers the ones forked from that conversation.
+Called from a side conversation, offers its siblings.  Anywhere else
+there is no session to scope to, so it offers all of them.  With a prefix
+argument, EVERYWHERE, it offers all of them regardless.
+
+Both scopes are worth having.  Inside a conversation the question is
+usually \"where did I put that question I asked\", and another project's
+side conversations are noise.  Across conversations the question is what
+is still open at all: a side conversation lives until it is closed, so
+they collect quietly.
+
+The unscoped listing is also the only one that reaches a side
+conversation whose parent has been killed.  Nothing records which session
+it came from once the parent buffer is gone, and those are the easiest
+ones to forget.
 
 Codex discards its own on navigating elsewhere.  That does not port:
 Emacs users switch buffers constantly and it would throw away work
-mid-thought.  So this reports and switches.  Nothing is closed for you."
-  (interactive)
-  (let ((candidates (agent-shell-side--list-candidates)))
+mid-thought.  So this switches, and closes nothing for you."
+  (interactive "P")
+  (let* ((session (unless everywhere (agent-shell-side--current-session-id)))
+         (candidates (agent-shell-side--list-candidates session)))
     (unless candidates
-      (user-error "No side conversations are open"))
-    (let* ((choice (completing-read "Side conversation: " candidates nil t))
+      (user-error "%s" (if session
+                           "No side conversations are open for this conversation"
+                         "No side conversations are open")))
+    (let* ((choice (completing-read (if session
+                                        "Side conversation: "
+                                      "Side conversation (all): ")
+                                    candidates nil t))
            (buffer (cdr (assoc choice candidates))))
       (unless (buffer-live-p buffer)
         (user-error "That side conversation is gone"))

@@ -1,13 +1,12 @@
 # Design: open work for agent-shell-side
 
-Status as of 2026-08-24. The package works: two commits, `make check` green
-(byte-compile plus 57 ERT tests against stubs). One end-to-end run against a
-real claude-agent-acp 0.70 verified the core mechanism (fork, boundary block,
-task and convention refusal, `session/delete`).
+Status as of 2026-08-25. `make check` is green (76 ERT tests against stubs)
+and `make live-check` passes 10 of 10 against a real claude-agent-acp 0.70.
 
-Four questions remained open after that. This document records the decision
-for each. Items 1, 3, and 4 are agreed. Item 2 was revised after reading
-Codex's own implementation.
+Four questions were open when this was written. This document records the
+decision for each, and what changed once they were built and run. Items 1
+and 3 are built. Item 2 is answered and needed no code, though running it
+found a separate bug that did. Item 4 stays deliberately unbuilt.
 
 ## 1. Live-testing handback and resume
 
@@ -55,75 +54,61 @@ report buffer so one run reads at a glance.
 
 ## 2. Forking while the parent's turn is in flight
 
-Decision: do not add a busy guard. Probe claude-agent-acp's mid-turn
-behavior; if the inherited partial turn reads as pending work, fix it in the
-boundary text, not with a refusal.
+Decision: no code change. Answered by the live run, 2026-08-25.
 
-This is the primary use case: ask a quick question while the main agent is
-busy. It has never been exercised.
+Codex forks mid-turn on purpose. Read from the Codex source at commit
+2df67054:
 
-Two facts ground the decision.
-
-First, process isolation. `agent-shell--start` (agent-shell.el:4715) creates
-each shell's own ACP client, which spawns a fresh agent subprocess
-(agent-shell.el:487). A side conversation is a separate OS process with its
-own JSON-RPC connection. The fork request cannot queue behind the parent's
-in-flight prompt at the transport layer. Any mid-turn risk is in the agent's
-own session store, shared between the two processes on disk.
-
-Second, Codex forks mid-turn on purpose. Read from the Codex source at
-commit 2df67054 (2026-08-24):
-
-- `/side` blocks only when no main thread exists or a side conversation is
-  already open (`side_start_block_message`,
+- `/side` blocks only when no main thread exists or a side conversation
+  is already open (`side_start_block_message`,
   codex-rs/tui/src/app/side.rs:610-618). Parent-busy is not checked.
-- The fork reads the parent's persisted rollout file, Codex's on-disk
-  transcript, appended as the turn streams
-  (codex-rs/core/src/thread_manager.rs:1188). It does not read live
-  in-memory state.
+- The fork reads the parent's persisted rollout file, appended as the
+  turn streams (codex-rs/core/src/thread_manager.rs:1188).
 - The side fork uses `ForkSnapshot::Interrupted`
-  (codex-rs/app-server/src/request_processors/thread_processor.rs:4792).
-  Its contract: fork the current persisted history as if the source thread
-  had been interrupted now; if the snapshot ends mid-turn, append the same
-  `<turn_aborted>` marker a real interrupt produces. The fork's model sees
-  the unfinished turn as aborted, not as a task to finish. The TUI
-  suppresses its "turn was interrupted" notice inside side conversations
-  (app/side.rs:266) because that marker is expected there.
+  (codex-rs/app-server/src/request_processors/thread_processor.rs:4792):
+  if the snapshot ends mid-turn, append the same `<turn_aborted>` marker
+  a real interrupt produces, so the fork reads the unfinished turn as
+  abandoned rather than pending.
 
-So the desired semantics are known, not guessed: never refuse on busy, fork
-captures history up to now, and the partial turn must read as aborted.
+claude-agent-acp gives us the same behaviour without any help. The live
+probe forked while the parent was working through a slow read-only task.
+The fork returned a working session, inherited the planted token, and
+when asked whether it was in the middle of anything, said: "this side
+conversation has no task in progress; the .el file review belongs to the
+parent conversation."
 
-The remaining unknown is adapter-specific. Codex solved this inside its own
-core. Our fork goes through claude-agent-acp, which wraps Claude Code's
-session files. Whether it snapshots cleanly mid-turn, and whether the
-partial turn reads as aborted, is untested.
+So the boundary needs no interrupted-turn clause, and there is no busy
+guard to add. Also note the process shape that made this safe: each shell
+creates its own ACP client and agent subprocess (agent-shell.el:4715 and
+:487), so a fork never queues behind the parent's in-flight prompt.
 
-Probe (in the live test file from item 1): drive a real parent through a
-slow multi-step tool-using task. While `agent-shell-status` on the parent
-reports busy, call `agent-shell-side`. Record whether the fork errors,
-hangs, or succeeds; if it succeeds, whether the inherited history stops at
-the last completed turn or includes partial progress; and whether the fork
-tries to complete the unfinished turn.
+### What the live run did find
 
-Responses, in order of preference:
+A conversation that has never taken a turn cannot be forked.
+claude-agent-acp answers `session/fork` with `-32002 Resource not found`:
+a session id exists from `session/new`, but there is no transcript to
+fork yet.
 
-1. Probe clean: no code change. Delete the "not yet exercised" caveat from
-   the README.
-2. Fork succeeds but the fork treats the partial turn as pending work: add a
-   clause to `agent-shell-side-boundary-prompt` stating that an unfinished
-   turn in the inherited history was interrupted and must not be completed.
-   Bump `agent-shell-side-boundary-version`. This is the Codex-faithful
-   fix; we cannot inject a `<turn_aborted>` marker into another agent's
-   history, so instruction text is our only channel. Estimated size: a few
-   lines of text plus the version bump.
-3. Fork errors or hangs mid-turn: add a busy/blocked `user-error` guard next
-   to the existing checks in `agent-shell-side--parent-shell`
-   (agent-shell-side.el:607), telling the user to wait or interrupt. One
-   line. Last resort only, because it removes the feature's main use case.
+`agent-shell-side` did not notice. It created the shell, the fork errored,
+no session was ever selected, and the buffer sat there taking input that
+went nowhere. Two live probes forked a freshly started parent and failed
+this way, and one of them passed anyway, because "the side conversation
+stayed open" is true of a dead one too.
 
-Do not add the clause from response 2 preemptively. The boundary already
-forbids continuing any pre-boundary instruction, plan, or tool call; add the
-explicit interrupted-turn wording only if the probe shows it is needed.
+Fixed in two places. `agent-shell-side--watch-startup` closes the fork and
+says why when an error arrives before any session is selected, which
+covers this cause and any other. The harness now routes every fork
+through `agent-shell-side-live--fork`, which fails loudly when the fork
+never reaches a prompt, so a dead fork can no longer be reported as a
+pass.
+
+Codex refuses the same case up front, keyed off its own error text
+("includeTurns is unavailable before first user message",
+codex-rs/tui/src/app/side.rs:620-629). A pre-flight refusal would be
+better UX than closing after the fact. It needs a reliable way to ask
+"has this conversation taken a turn", which `agent-shell` does not
+expose; `shell-maker-history` scrapes the buffer and is unreliable at
+prompt boundaries. Left as a follow-up.
 
 ## 3. Side-buffer accumulation
 
@@ -140,13 +125,23 @@ to close a side conversation on an empty or failed handback precisely to
 avoid silently losing work. A reaper would lose work on a schedule instead
 of on a failure, which is worse.
 
-Adopted: one new command, `agent-shell-side-list`, backed by a
-`tabulated-list-mode` buffer enumerating every live buffer where
-`agent-shell-side-buffer-p` is non-nil, showing its parent, the parent's
-status, and its age. Unbound by default, documented in the README,
-discoverable via `M-x`. This matches how `list-buffers` and `ibuffer` work
-in stock Emacs: the user sees what is open and decides what is done.
-Estimated size: roughly 60-80 lines plus tests.
+Adopted: one new command, `agent-shell-side-list`, offering the open side
+conversations through `completing-read`, each labelled with its parent,
+the parent's state, and its age. Unbound by default, documented in the
+README, discoverable via `M-x`.
+
+Revised while building: this started as a `tabulated-list-mode` buffer.
+Bill asked for completion instead, which is also what
+`agent-shell-side-resume` already uses, so the package now picks the same
+way everywhere. Labels are de-duplicated before being offered, since
+`completing-read` answers with a string and two side conversations
+sharing a name and a parent would collapse into one reachable candidate.
+
+Scope, also on Bill's ask, is both: from a shell it offers that
+conversation's own side ones, from a side conversation its siblings, and
+anywhere else, or with a prefix argument, all of them. The unscoped
+listing is the only one that reaches a side conversation whose parent was
+killed, since nothing records which session an orphan came from.
 
 ## 4. Nesting (a side conversation of a side conversation)
 
@@ -160,10 +155,11 @@ The link record schema already supports chains with no change: a record's
 and `agent-shell-side-links-for-parent` filters on that field alone. So
 nothing needs restructuring to keep the option open.
 
-Do not build it now. Handback, resume, and mid-turn forking are all still
-unverified live. Nesting multiplies exactly that untested surface: boundary
-instruction composition across N hops, N link records, N accumulating
-buffers. Prove the one-hop case first.
+Do not build it now. Nesting multiplies the surface that took a live run to
+pin down: boundary instruction composition across N hops, N link records, N
+accumulating buffers. The one-hop case is only now proven, and the live run
+found a fork failure mode nobody had predicted, so prove this shape in real
+use before adding another.
 
 If real usage later shows the need, the likely change is not a nesting
 concept but deleting the one-hop guard. The boundary prompt is already
@@ -177,8 +173,8 @@ history.
    instrument everything else depends on. Built: `tests/live/`, run by
    `make live-check`. Byte-compiles clean and loads against the real
    stack. Not yet run against an agent, so no probe result exists yet.
-2. Item 2's response, chosen by the probe result. Blocked on running the
-   harness.
+2. Item 2: answered by the live run. Forking mid-turn is safe and needs
+   no code. The run also found the turn-less fork bug, now fixed.
 3. Item 3's `agent-shell-side-list`, independent of the others. Built.
    Writing it surfaced three latent bugs sharing one cause:
    `agent-shell-side-buffer-p` read the parent link, which is cleared

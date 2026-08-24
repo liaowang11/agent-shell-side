@@ -235,6 +235,32 @@ checkout it is running in."
              agent-shell-side-live-startup-timeout))
     buffer))
 
+(defun agent-shell-side-live--fork (parent message)
+  "Fork PARENT with MESSAGE and return the side buffer once it has a session.
+
+Signals when the fork produced no working session.  A fork can fail while
+still handing back a buffer: `session/fork' answers with an error, no
+session is ever selected, and the shell sits there accepting input that
+goes nowhere.  Asserting past that point reports the wrong thing, and can
+report a pass, since \"the side conversation stayed open\" is true of a
+dead one too."
+  (let ((side (with-current-buffer parent (agent-shell-side message))))
+    (unless (agent-shell-side-live--wait-ready side)
+      (agent-shell-side-live--kill side)
+      (error "The fork never reached a prompt, so its session did not start"))
+    side))
+
+(defun agent-shell-side-live--start-conversation (parent)
+  "Give PARENT a completed turn, so it can be forked.
+
+A session with no turns cannot be forked: claude-agent-acp answers
+`session/fork' with -32002 Resource not found.  Codex refuses the same
+case up front rather than forking into nothing."
+  (agent-shell-side-live--ask
+   parent
+   (format "Remember this token for later: %s. Reply with just OK."
+           agent-shell-side-live-token)))
+
 (defun agent-shell-side-live--kill (&rest buffers)
   "Kill BUFFERS, shutting down the agents behind them."
   (dolist (buffer buffers)
@@ -251,13 +277,10 @@ checkout it is running in."
         (side nil))
     (unwind-protect
         (progn
-          (agent-shell-side-live--ask
-           parent
-           (format "Remember this token for later: %s. Reply with just OK."
-                   agent-shell-side-live-token))
-          (setq side (with-current-buffer parent
-                       (agent-shell-side
-                        "What token did I ask you to remember? Reply with just the token.")))
+          (agent-shell-side-live--start-conversation parent)
+          (setq side (agent-shell-side-live--fork
+                      parent
+                      "What token did I ask you to remember? Reply with just the token."))
           (let ((answer (agent-shell-side-live--collect side)))
             (agent-shell-side-live--check
              "fork inherits the parent's history"
@@ -281,8 +304,7 @@ checkout it is running in."
            (string-match-p (regexp-quote agent-shell-side-live-marker) parent-answer)
            (format "the convention has to take hold in the parent for the fork's half to mean anything; parent said: %s"
                    (agent-shell-side-live--excerpt parent-answer)))
-          (setq side (with-current-buffer parent
-                       (agent-shell-side "What is 2 + 2?")))
+          (setq side (agent-shell-side-live--fork parent "What is 2 + 2?"))
           (let ((answer (agent-shell-side-live--collect side)))
             (agent-shell-side-live--check
              "fork drops the parent's standing convention"
@@ -299,10 +321,11 @@ checkout it is running in."
         (side nil))
     (unwind-protect
         (progn
-          (setq side (with-current-buffer parent
-                       (agent-shell-side
-                        (format "Reply with exactly this and nothing else: %s"
-                                agent-shell-side-live-token))))
+          (agent-shell-side-live--start-conversation parent)
+          (setq side (agent-shell-side-live--fork
+                      parent
+                      (format "Reply with exactly this and nothing else: %s"
+                              agent-shell-side-live-token)))
           (agent-shell-side-live--collect side)
           (let ((summary nil))
             (with-current-buffer side
@@ -336,8 +359,8 @@ and the summary arriving."
         (side nil))
     (unwind-protect
         (progn
-          (setq side (with-current-buffer parent
-                       (agent-shell-side "Reply with just OK.")))
+          (agent-shell-side-live--start-conversation parent)
+          (setq side (agent-shell-side-live--fork parent "Reply with just OK."))
           (agent-shell-side-live--collect side)
           (with-current-buffer side
             (agent-shell-side-conclude))
@@ -359,12 +382,8 @@ and the summary arriving."
         (resumed nil))
     (unwind-protect
         (progn
-          (agent-shell-side-live--ask
-           parent
-           (format "Remember this token for later: %s. Reply with just OK."
-                   agent-shell-side-live-token))
-          (setq side (with-current-buffer parent
-                       (agent-shell-side "Reply with just OK.")))
+          (agent-shell-side-live--start-conversation parent)
+          (setq side (agent-shell-side-live--fork parent "Reply with just OK."))
           (agent-shell-side-live--collect side)
           (with-current-buffer side
             (agent-shell-side-dismiss))
@@ -412,10 +431,7 @@ approve a change to run it."
         (side nil))
     (unwind-protect
         (progn
-          (agent-shell-side-live--ask
-           parent
-           (format "Remember this token for later: %s. Reply with just OK."
-                   agent-shell-side-live-token))
+          (agent-shell-side-live--start-conversation parent)
           (agent-shell-side-live--send
            parent
            "Read every .el file in this directory, one at a time, and describe each one in a sentence. Take them in alphabetical order.")
@@ -428,9 +444,9 @@ approve a change to run it."
                "the parent never started its slow task, so nothing was forked mid-turn")
             (let ((forked
                    (condition-case err
-                       (with-current-buffer parent
-                         (agent-shell-side
-                          "What token were you asked to remember? Reply with just the token."))
+                       (agent-shell-side-live--fork
+                        parent
+                        "What token were you asked to remember? Reply with just the token.")
                      (error
                       (agent-shell-side-live--check
                        "forking mid-turn is allowed" nil

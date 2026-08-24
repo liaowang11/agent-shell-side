@@ -492,19 +492,61 @@ The mode line alone is easy to miss when the parent is off screen."
         (funcall handler '((:event . permission-request))))
       (should (equal messages '("Side conversation: main needs approval"))))))
 
+(defun agent-shell-side-tests--handler (buffer event)
+  "Return the handler subscribed to EVENT on BUFFER, or nil."
+  (nth 2 (seq-find (lambda (subscription)
+                     (and (eq (nth 0 subscription) buffer)
+                          (eq (nth 1 subscription) event)))
+                   agent-shell-test-subscriptions)))
+
+(defun agent-shell-side-tests--open-side (parent)
+  "Start a side conversation from PARENT without touching its session id."
+  (with-current-buffer parent
+    (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+      (agent-shell-side))))
+
 (ert-deftest agent-shell-side-test-session-id-from-public-event ()
   "The side session id is taken from the public `session-selected' event."
   (agent-shell-side-tests--with-parent
-    (let* ((side (with-current-buffer parent
-                   (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
-                     (agent-shell-side))))
-           (handler (nth 2 (seq-find (lambda (subscription)
-                                       (eq (nth 1 subscription) 'session-selected))
-                                     agent-shell-test-subscriptions))))
+    (let* ((side (agent-shell-side-tests--open-side parent))
+           (handler (agent-shell-side-tests--handler side nil)))
       (should handler)
       (funcall handler '((:event . session-selected)
                          (:data . ((:session-id . "side-1")))))
       (should (equal (agent-shell-side--session-id side) "side-1")))))
+
+(ert-deftest agent-shell-side-test-fork-that-starts-no-session-is-torn-down ()
+  "A fork that never gets a session is closed rather than left behind.
+
+`session/fork' can fail while the shell started for it stays: no session
+is ever selected, and the buffer takes input that goes nowhere.  Against
+claude-agent-acp this is what forking a conversation that has never taken
+a turn does, answering -32002."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--open-side parent))
+           (handler (agent-shell-side-tests--handler side nil)))
+      (should handler)
+      (should (seq-find
+               (lambda (line) (string-match-p "did not start a session" line))
+               (agent-shell-side-tests--silently
+                 (funcall handler
+                          '((:event . error)
+                            (:data . ((:code . -32002)
+                                      (:message . "Resource not found: x"))))))))
+      (should-not (buffer-live-p side))
+      (should-not (buffer-local-value 'agent-shell-side--side-buffer parent)))))
+
+(ert-deftest agent-shell-side-test-error-after-a-session-keeps-the-side ()
+  "Once the session exists, an error is an ordinary failure, not a dead fork."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--open-side parent))
+           (handler (agent-shell-side-tests--handler side nil)))
+      (funcall handler '((:event . session-selected)
+                         (:data . ((:session-id . "side-1")))))
+      (agent-shell-side-tests--silently
+        (funcall handler '((:event . error)
+                           (:data . ((:message . "boom"))))))
+      (should (buffer-live-p side)))))
 
 ;;; Dismissal
 
@@ -897,6 +939,73 @@ label would make the second one unreachable."
       (let ((candidates (agent-shell-side--list-candidates)))
         (should (equal (length candidates) 2))
         (should (equal (length (seq-uniq (mapcar #'car candidates))) 2))))))
+
+(defun agent-shell-side-tests--make-parent (session-id)
+  "Return another stub parent shell whose session is SESSION-ID."
+  (let ((buffer (generate-new-buffer " *agent-shell side test parent alt*")))
+    (with-current-buffer buffer
+      (agent-shell-mode)
+      (setq-local agent-shell--state
+                  (list (cons :agent-config
+                              (list (cons :identifier 'claude-code)
+                                    (cons :buffer-name "Claude")
+                                    (cons :mode-line-name "Claude")
+                                    (cons :session-meta nil)))
+                        (cons :session (list (cons :id session-id)))
+                        (cons :client 'stub-client)
+                        (cons :supports-session-fork t))))
+    buffer))
+
+(ert-deftest agent-shell-side-test-list-scopes-to-the-current-session ()
+  "From a shell, the listing covers that conversation's own side ones."
+  (agent-shell-side-tests--with-parent
+    (let* ((mine (agent-shell-side-tests--start-side parent))
+           (other-parent (agent-shell-side-tests--make-parent "parent-2"))
+           (theirs (agent-shell-side-tests--start-side other-parent))
+           (buffers (with-current-buffer parent
+                      (agent-shell-side--list-buffers
+                       (agent-shell-side--current-session-id)))))
+      (should (memq mine buffers))
+      (should-not (memq theirs buffers)))))
+
+(ert-deftest agent-shell-side-test-list-can-cover-every-session ()
+  "Asked for everything, the listing crosses conversations."
+  (agent-shell-side-tests--with-parent
+    (let* ((mine (agent-shell-side-tests--start-side parent))
+           (other-parent (agent-shell-side-tests--make-parent "parent-2"))
+           (theirs (agent-shell-side-tests--start-side other-parent))
+           (buffers (agent-shell-side--list-buffers)))
+      (should (memq mine buffers))
+      (should (memq theirs buffers)))))
+
+(ert-deftest agent-shell-side-test-list-from-a-side-scopes-to-its-parent ()
+  "Inside a side conversation, the scope is the conversation it came from."
+  (agent-shell-side-tests--with-parent
+    (let* ((mine (agent-shell-side-tests--start-side parent))
+           (other-parent (agent-shell-side-tests--make-parent "parent-2"))
+           (theirs (agent-shell-side-tests--start-side other-parent))
+           (buffers (with-current-buffer mine
+                      (agent-shell-side--list-buffers
+                       (agent-shell-side--current-session-id)))))
+      (should (memq mine buffers))
+      (should-not (memq theirs buffers)))))
+
+(ert-deftest agent-shell-side-test-list-outside-a-shell-covers-everything ()
+  "Away from any shell there is no session to scope to, so nothing is hidden."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (with-temp-buffer
+        (should-not (agent-shell-side--current-session-id))
+        (should (memq side (agent-shell-side--list-buffers
+                            (agent-shell-side--current-session-id))))))))
+
+(ert-deftest agent-shell-side-test-list-scoped-refuses-when-session-has-none ()
+  "A conversation with no side ones says so, without offering another's."
+  (agent-shell-side-tests--with-parent
+    (let ((other-parent (agent-shell-side-tests--make-parent "parent-2")))
+      (agent-shell-side-tests--start-side other-parent)
+      (with-current-buffer parent
+        (should-error (agent-shell-side-list) :type 'user-error)))))
 
 (ert-deftest agent-shell-side-test-list-refuses-when-there-are-none ()
   "With nothing open, listing says so rather than prompting on an empty set."

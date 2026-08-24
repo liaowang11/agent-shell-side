@@ -166,10 +166,26 @@ Against claude-agent-acp 0.70, end to end:
   before the standing-conventions clause; see above)
 - `session/delete` succeeds
 
-Not yet exercised against a live agent: `agent-shell-side-conclude`'s handback,
-`agent-shell-side-resume`, and forking while the parent's turn is still in
-flight. `make live-check` now covers all three; the results of running it are
-not in yet.
+`make live-check` covers the rest, and passes 10 of 10 against
+claude-agent-acp 0.70:
+
+- the handback summarises, reaches the parent's prompt staged rather than sent,
+  and closes the side conversation
+- a handback whose parent is killed mid-summary leaves the side conversation
+  open rather than discarding it
+- a kept session resumes and still answers from the parent's history
+- **forking mid-turn works.** Asked while the parent was in the middle of a
+  slow task, the fork answered "this side conversation has no task in progress;
+  the .el file review belongs to the parent conversation". It inherits the
+  history and does not adopt the unfinished turn, so no extra instruction text
+  is needed for it.
+
+One limit the live run found: **a conversation that has not taken a turn cannot
+be forked.** claude-agent-acp answers `session/fork` with `-32002 Resource not
+found`, because there is no transcript to fork yet. Having a session id is not
+enough. The fork is now closed with an explanation when this happens, rather
+than leaving a shell whose input goes nowhere. Codex refuses the same case up
+front.
 
 ## Development
 
