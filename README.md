@@ -34,6 +34,7 @@ one.
 | `agent-shell-side-conclude` | `C-c C-q` | Summarise the side conversation into the parent, then close it |
 | `agent-shell-side-dismiss` | `C-c C-k` | Close the side conversation, discarding what it learned |
 | `agent-shell-side-resume` | | Reopen a side conversation that was kept |
+| `agent-shell-side-list` | | Show the side conversations that are open |
 | `agent-shell-side-describe` | | Echo what this buffer is and how to leave it |
 
 ### Asking about part of an answer
@@ -60,6 +61,18 @@ While you are in the side conversation, the parent keeps running. When it
 finishes, fails, or asks for approval, the side conversation's mode line says so
 (` Side:main needs approval`) and echoes it once. Set
 `agent-shell-side-report-parent-status` to nil for the mode line only.
+
+### Keeping track of what is open
+
+A side conversation lives until you close it, so they collect quietly.
+`agent-shell-side-list` shows the ones still open, what each was forked from,
+how its parent is doing, and how long it has been sitting there. `RET` switches
+to the one on the line.
+
+Nothing is closed for you. Codex discards its side thread when you navigate to
+a third thread; that does not port to Emacs, where switching buffers is
+constant and auto-discard would throw away work mid-thought. An idle reaper
+would do the same on a timer. So this reports and leaves the decision to you.
 
 ## How the restriction works
 
@@ -151,16 +164,35 @@ Against claude-agent-acp 0.70, end to end:
 
 Not yet exercised against a live agent: `agent-shell-side-conclude`'s handback,
 `agent-shell-side-resume`, and forking while the parent's turn is still in
-flight.
+flight. `make live-check` now covers all three; the results of running it are
+not in yet.
 
 ## Development
 
 ```sh
-make check   # byte compile, then run the tests
-make test
+make check        # byte compile, then run the unit tests
+make live-check   # drive a real agent (see below)
 ```
 
-Tests run against stubs in `tests/support`, so no agent process is started.
+Unit tests run against stubs in `tests/support`, so no agent process is
+started.
+
+`make live-check` is separate on purpose. It starts a real claude-agent-acp,
+spends real API tokens, and waits on model output that is not deterministic, so
+it has no place in a suite you run on every edit. Run it when the adapter or
+ACP version changes, and before tagging a release. It expects the real stack
+next door:
+
+```sh
+make live-check AGENT_SHELL_DIR=... ACP_DIR=... SHELL_MAKER_DIR=...
+```
+
+The probes cover history inheritance, the standing-conventions clause, the
+handback (including a parent killed mid-summary), resuming a kept session, and
+forking while the parent's turn is in flight. Permissions are answered by a
+read-only auto-approver, so an unattended run cannot let the agent change the
+checkout it is running in; a probe needing more is left to time out rather than
+approved.
 
 ## License
 

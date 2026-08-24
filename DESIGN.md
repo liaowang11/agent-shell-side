@@ -34,9 +34,14 @@ feature support:
    through the real event path (`agent-message-chunk` then `turn-complete`
    in `agent-shell-side--collect-summary`), lands in the parent prefixed by
    `agent-shell-side-handback-header`, and the side buffer closes per
-   `agent-shell-side-on-dismiss`. Also drive both refusal branches in
-   `agent-shell-side--finish-handback`: an empty summary, and a parent
-   killed before the summary lands. Neither has met real chunk timing.
+   `agent-shell-side-on-dismiss`. Also drive the refusal in
+   `agent-shell-side--finish-handback` for a parent killed before the
+   summary lands, which only real streaming can put in that window.
+
+   Revised while building: the other refusal branch, an empty summary,
+   stays a unit test. It is about content, not timing, and a live model
+   cannot be made to reliably say nothing, so a live version would assert
+   against a fake rather than the guard.
 3. Resume. Dismiss with `keep`, capture the link record, kill both buffers,
    call `agent-shell-side-resume`, assert the resumed session still answers
    from the planted fact. This tests the load-bearing claim in
@@ -169,7 +174,16 @@ history.
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the
-   instrument everything else depends on.
-2. Item 2's response, chosen by the probe result.
-3. Item 3's `agent-shell-side-list`, independent of the others.
+   instrument everything else depends on. Built: `tests/live/`, run by
+   `make live-check`. Byte-compiles clean and loads against the real
+   stack. Not yet run against an agent, so no probe result exists yet.
+2. Item 2's response, chosen by the probe result. Blocked on running the
+   harness.
+3. Item 3's `agent-shell-side-list`, independent of the others. Built.
+   Writing it surfaced three latent bugs sharing one cause:
+   `agent-shell-side-buffer-p` read the parent link, which is cleared
+   when the parent is killed, so an orphaned side conversation stopped
+   counting as one. It could not be dismissed, wore the parent's mode
+   line lighter, and could have nested. A buffer-local marker set at link
+   time and never cleared fixed all three.
 4. Item 4: nothing.
