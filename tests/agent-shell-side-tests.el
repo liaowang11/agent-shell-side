@@ -799,6 +799,118 @@ the parent nothing."
           (should-error (agent-shell-side-conclude) :type 'user-error)))
       (should (buffer-live-p side)))))
 
+;;; Listing open side conversations
+
+(ert-deftest agent-shell-side-test-buffer-p-survives-a-closed-parent ()
+  "A side conversation is still one after its parent is killed.
+
+The parent link is cleared when the parent goes away.  A predicate
+reading only that link would stop recognising the buffer, and every
+command keyed off it would then refuse to act on exactly the
+conversations most likely to be left lying around."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (should (agent-shell-side-buffer-p side)))))
+
+(ert-deftest agent-shell-side-test-dismiss-works-without-a-parent ()
+  "An orphaned side conversation can still be closed by its own command."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-side-on-dismiss 'delete))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (agent-shell-side-dismiss)))
+      (should-not (buffer-live-p side)))))
+
+(ert-deftest agent-shell-side-test-orphan-keeps-the-side-lighter ()
+  "An orphaned side conversation does not advertise itself as a parent."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (with-current-buffer side
+        (should (string-prefix-p " Side:" (agent-shell-side--lighter)))))))
+
+(ert-deftest agent-shell-side-test-format-age ()
+  "Ages read in the largest unit that still says something."
+  (should (equal (agent-shell-side--format-age 0) "0s"))
+  (should (equal (agent-shell-side--format-age 45) "45s"))
+  (should (equal (agent-shell-side--format-age 60) "1m"))
+  (should (equal (agent-shell-side--format-age (* 90 60)) "1h"))
+  (should (equal (agent-shell-side--format-age (* 50 60 60)) "2d")))
+
+(ert-deftest agent-shell-side-test-list-buffers-finds-side-conversations ()
+  "Listing finds side conversations and skips their parents."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (should (memq side (agent-shell-side--list-buffers)))
+      (should-not (memq parent (agent-shell-side--list-buffers))))))
+
+(ert-deftest agent-shell-side-test-list-buffers-keeps-orphans ()
+  "An orphaned side conversation is still listed.
+
+It is the one nothing else points at any more, so leaving it out would
+hide the buffers most in need of attention."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (should (memq side (agent-shell-side--list-buffers))))))
+
+(ert-deftest agent-shell-side-test-list-entries-describe-the-parent ()
+  "An entry names its parent and reports the parent's state."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (agent-shell-side--set-parent-status side 'needs-approval)
+      (let ((columns (cadr (assq side (agent-shell-side--list-entries)))))
+        (should (equal (aref columns 0) (buffer-name side)))
+        (should (equal (aref columns 1) (buffer-name parent)))
+        (should (equal (aref columns 2) "needs approval"))))))
+
+(ert-deftest agent-shell-side-test-list-entries-mark-a-gone-parent ()
+  "An entry says so when the parent buffer is gone."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (let ((columns (cadr (assq side (agent-shell-side--list-entries)))))
+        (should (equal (aref columns 1) "(gone)"))
+        (should (equal (aref columns 2) "closed"))))))
+
+(ert-deftest agent-shell-side-test-list-refuses-when-there-are-none ()
+  "With nothing open, listing says so rather than showing an empty table."
+  (agent-shell-side-tests--with-parent
+    (should-error (agent-shell-side-list) :type 'user-error)))
+
+(ert-deftest agent-shell-side-test-list-shows-a-table ()
+  "Listing puts every open side conversation in the list buffer."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (unwind-protect
+          (save-window-excursion
+            (agent-shell-side-list)
+            (should (eq major-mode 'agent-shell-side-list-mode))
+            (should (assq side tabulated-list-entries)))
+        (when-let* ((buffer (get-buffer agent-shell-side-list-buffer-name)))
+          (kill-buffer buffer))))))
+
+(ert-deftest agent-shell-side-test-list-visits-the-side-conversation ()
+  "Selecting a row switches to that side conversation."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (unwind-protect
+          (save-window-excursion
+            (agent-shell-side-list)
+            (goto-char (point-min))
+            (agent-shell-side-list-visit)
+            (should (eq (current-buffer) side)))
+        (when-let* ((buffer (get-buffer agent-shell-side-list-buffer-name)))
+          (kill-buffer buffer))))))
+
 (provide 'agent-shell-side-tests)
 
 ;;; agent-shell-side-tests.el ends here

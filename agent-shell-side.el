@@ -54,6 +54,7 @@
 (require 'agent-shell-side-links)
 (require 'map)
 (require 'seq)
+(require 'tabulated-list)
 (eval-when-compile (require 'cl-lib))
 
 (defvar agent-shell-agent-configs)
@@ -184,6 +185,17 @@ window and the parent is off screen."
 
 ;;; Buffer-local state
 
+(defvar-local agent-shell-side--is-side nil
+  "Non-nil in a side conversation, for as long as the buffer lives.
+
+Kept separate from `agent-shell-side--parent-buffer', which is cleared
+when the parent goes away.  What a buffer *is* does not change when its
+parent is killed, and the orphans are the ones most likely to be left
+lying around, so they have to stay recognisable.")
+
+(defvar-local agent-shell-side--created-at nil
+  "In a side conversation, when it was opened.")
+
 (defvar-local agent-shell-side--parent-buffer nil
   "In a side conversation, the shell buffer it was forked from.")
 
@@ -206,10 +218,13 @@ One of `needs-approval', `finished', `failed', `closed', or nil.")
   (and (bufferp buffer) (buffer-live-p buffer) buffer))
 
 (defun agent-shell-side-buffer-p (&optional buffer)
-  "Return non-nil when BUFFER is a side conversation."
-  (and (agent-shell-side--live-buffer
-        (buffer-local-value 'agent-shell-side--parent-buffer
-                            (or buffer (current-buffer))))
+  "Return non-nil when BUFFER is a side conversation.
+
+Stays true after the parent is killed.  A side conversation that outlived
+its parent is still a side conversation, and still has a forked session
+to dispose of."
+  (and (buffer-local-value 'agent-shell-side--is-side
+                           (or buffer (current-buffer)))
        t))
 
 (defun agent-shell-side--session-id (buffer)
@@ -398,14 +413,22 @@ the event says nothing worth showing."
     ((or 'input-submitted 'permission-response) 'clear)
     (_ nil)))
 
+(defun agent-shell-side--status-phrase (status)
+  "Return a bare description of parent STATUS, or nil when there is none.
+
+Says what happened without naming the parent, for places that name it
+already."
+  (pcase status
+    ('needs-approval "needs approval")
+    ('finished "finished")
+    ('failed "failed")
+    ('closed "closed")
+    (_ nil)))
+
 (defun agent-shell-side--status-label (status)
   "Return a one-line description of parent STATUS, or nil when there is none."
-  (pcase status
-    ('needs-approval "main needs approval")
-    ('finished "main finished")
-    ('failed "main failed")
-    ('closed "main closed")
-    (_ nil)))
+  (when-let* ((phrase (agent-shell-side--status-phrase status)))
+    (concat "main " phrase)))
 
 (defun agent-shell-side--set-parent-status (side-buffer status)
   "Record STATUS as SIDE-BUFFER's parent state and refresh its mode line."
@@ -498,6 +521,8 @@ two keys work from either end.  Not meant to be turned on by hand."
     (agent-shell-side-mode 1)
     (add-hook 'kill-buffer-hook #'agent-shell-side--on-parent-killed nil t))
   (with-current-buffer side-buffer
+    (setq agent-shell-side--is-side t)
+    (setq agent-shell-side--created-at (current-time))
     (setq agent-shell-side--parent-buffer parent-buffer)
     (setq agent-shell-side--parent-subscription
           (agent-shell-side--watch-parent side-buffer parent-buffer))
@@ -862,6 +887,99 @@ of them when this buffer has no session of its own."
           (or (map-elt record :agent) "?")
           (abbreviate-file-name (or (map-elt record :cwd) ""))
           (if (agent-shell-side-links-stale-p record) "  (older instructions)" "")))
+
+;;; Listing open side conversations
+
+(defconst agent-shell-side-list-buffer-name "*Side conversations*"
+  "Name of the buffer `agent-shell-side-list' draws its table in.")
+
+(defun agent-shell-side--format-age (seconds)
+  "Return SECONDS as a short age in its largest whole unit."
+  (let ((seconds (floor seconds)))
+    (cond ((< seconds 60) (format "%ds" seconds))
+          ((< seconds 3600) (format "%dm" (/ seconds 60)))
+          ((< seconds 86400) (format "%dh" (/ seconds 3600)))
+          (t (format "%dd" (/ seconds 86400))))))
+
+(defun agent-shell-side--list-buffers ()
+  "Return the live side conversations, oldest first.
+
+Oldest first because the one open longest is the one most likely to have
+been forgotten."
+  (sort (seq-filter #'agent-shell-side-buffer-p (buffer-list))
+        (lambda (a b)
+          (time-less-p
+           (or (buffer-local-value 'agent-shell-side--created-at a) 0)
+           (or (buffer-local-value 'agent-shell-side--created-at b) 0)))))
+
+(defun agent-shell-side--list-entries ()
+  "Return `tabulated-list-entries' for the open side conversations."
+  (let ((now (current-time)))
+    (mapcar
+     (lambda (buffer)
+       (let ((parent (agent-shell-side--live-buffer
+                      (buffer-local-value 'agent-shell-side--parent-buffer
+                                          buffer)))
+             (created (buffer-local-value 'agent-shell-side--created-at buffer)))
+         (list buffer
+               (vector (buffer-name buffer)
+                       (if parent (buffer-name parent) "(gone)")
+                       (or (agent-shell-side--status-phrase
+                            (buffer-local-value 'agent-shell-side--parent-status
+                                                buffer))
+                           "")
+                       (if created
+                           (agent-shell-side--format-age
+                            (float-time (time-subtract now created)))
+                         "")))))
+     (agent-shell-side--list-buffers))))
+
+(defun agent-shell-side-list--refresh ()
+  "Fill `tabulated-list-entries' from the open side conversations."
+  (setq tabulated-list-entries (agent-shell-side--list-entries)))
+
+(defun agent-shell-side-list-visit ()
+  "Switch to the side conversation on this line."
+  (interactive)
+  (let ((buffer (tabulated-list-get-id)))
+    (unless (buffer-live-p buffer)
+      (user-error "That side conversation is gone; press g to refresh"))
+    (agent-shell-side--display buffer)))
+
+(defvar-keymap agent-shell-side-list-mode-map
+  :doc "Keymap for `agent-shell-side-list-mode'."
+  "RET" #'agent-shell-side-list-visit)
+
+(define-derived-mode agent-shell-side-list-mode tabulated-list-mode
+  "Side conversations"
+  "Major mode listing the side conversations that are open."
+  (setq tabulated-list-format [("Side" 34 t)
+                               ("Parent" 28 t)
+                               ("Parent state" 16 t)
+                               ("Age" 5 nil)])
+  (setq tabulated-list-padding 2)
+  (add-hook 'tabulated-list-revert-hook #'agent-shell-side-list--refresh nil t)
+  (tabulated-list-init-header))
+
+;;;###autoload
+(defun agent-shell-side-list ()
+  "Show the side conversations that are open.
+
+A side conversation lives until it is closed, so they collect quietly.
+Codex discards its own on navigating elsewhere, which does not port:
+Emacs users switch buffers constantly and that would throw away work
+mid-thought.  This is the view instead, saying what is still open, what
+each was forked from, and how long it has been sitting there.  Nothing is
+closed for you."
+  (interactive)
+  (unless (agent-shell-side--list-buffers)
+    (user-error "No side conversations are open"))
+  (let ((buffer (get-buffer-create agent-shell-side-list-buffer-name)))
+    (with-current-buffer buffer
+      (agent-shell-side-list-mode)
+      (agent-shell-side-list--refresh)
+      (tabulated-list-print))
+    (pop-to-buffer buffer)))
 
 ;;;###autoload
 (defun agent-shell-side-describe ()
