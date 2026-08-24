@@ -54,7 +54,6 @@
 (require 'agent-shell-side-links)
 (require 'map)
 (require 'seq)
-(require 'tabulated-list)
 (eval-when-compile (require 'cl-lib))
 
 (defvar agent-shell-agent-configs)
@@ -890,9 +889,6 @@ of them when this buffer has no session of its own."
 
 ;;; Listing open side conversations
 
-(defconst agent-shell-side-list-buffer-name "*Side conversations*"
-  "Name of the buffer `agent-shell-side-list' draws its table in.")
-
 (defun agent-shell-side--format-age (seconds)
   "Return SECONDS as a short age in its largest whole unit."
   (let ((seconds (floor seconds)))
@@ -912,74 +908,62 @@ been forgotten."
            (or (buffer-local-value 'agent-shell-side--created-at a) 0)
            (or (buffer-local-value 'agent-shell-side--created-at b) 0)))))
 
-(defun agent-shell-side--list-entries ()
-  "Return `tabulated-list-entries' for the open side conversations."
-  (let ((now (current-time)))
-    (mapcar
-     (lambda (buffer)
-       (let ((parent (agent-shell-side--live-buffer
-                      (buffer-local-value 'agent-shell-side--parent-buffer
-                                          buffer)))
-             (created (buffer-local-value 'agent-shell-side--created-at buffer)))
-         (list buffer
-               (vector (buffer-name buffer)
-                       (if parent (buffer-name parent) "(gone)")
-                       (or (agent-shell-side--status-phrase
-                            (buffer-local-value 'agent-shell-side--parent-status
-                                                buffer))
-                           "")
-                       (if created
-                           (agent-shell-side--format-age
-                            (float-time (time-subtract now created)))
-                         "")))))
-     (agent-shell-side--list-buffers))))
+(defun agent-shell-side--list-label (buffer)
+  "Return a one-line description of side conversation BUFFER."
+  (let* ((parent (agent-shell-side--live-buffer
+                  (buffer-local-value 'agent-shell-side--parent-buffer buffer)))
+         (created (buffer-local-value 'agent-shell-side--created-at buffer))
+         (status (agent-shell-side--status-phrase
+                  (buffer-local-value 'agent-shell-side--parent-status buffer))))
+    (format "%s  from %s%s%s"
+            (buffer-name buffer)
+            (if parent (buffer-name parent) "a shell that is gone")
+            (if status (format " (%s)" status) "")
+            (if created
+                (format "  %s ago"
+                        (agent-shell-side--format-age
+                         (float-time (time-subtract (current-time) created))))
+              ""))))
 
-(defun agent-shell-side-list--refresh ()
-  "Fill `tabulated-list-entries' from the open side conversations."
-  (setq tabulated-list-entries (agent-shell-side--list-entries)))
+(defun agent-shell-side--list-candidates ()
+  "Return the open side conversations as (LABEL . BUFFER) pairs.
 
-(defun agent-shell-side-list-visit ()
-  "Switch to the side conversation on this line."
-  (interactive)
-  (let ((buffer (tabulated-list-get-id)))
-    (unless (buffer-live-p buffer)
-      (user-error "That side conversation is gone; press g to refresh"))
-    (agent-shell-side--display buffer)))
-
-(defvar-keymap agent-shell-side-list-mode-map
-  :doc "Keymap for `agent-shell-side-list-mode'."
-  "RET" #'agent-shell-side-list-visit)
-
-(define-derived-mode agent-shell-side-list-mode tabulated-list-mode
-  "Side conversations"
-  "Major mode listing the side conversations that are open."
-  (setq tabulated-list-format [("Side" 34 t)
-                               ("Parent" 28 t)
-                               ("Parent state" 16 t)
-                               ("Age" 5 nil)])
-  (setq tabulated-list-padding 2)
-  (add-hook 'tabulated-list-revert-hook #'agent-shell-side-list--refresh nil t)
-  (tabulated-list-init-header))
+Labels are made unique before they are offered.  `completing-read'
+answers with a string, so two side conversations sharing a buffer name
+and a parent would otherwise collapse into one reachable candidate."
+  (let ((seen (make-hash-table :test #'equal)))
+    (mapcar (lambda (buffer)
+              (let* ((label (agent-shell-side--list-label buffer))
+                     (count (puthash label
+                                     (1+ (gethash label seen 0))
+                                     seen)))
+                (cons (if (> count 1)
+                          (format "%s  <%d>" label count)
+                        label)
+                      buffer)))
+            (agent-shell-side--list-buffers))))
 
 ;;;###autoload
 (defun agent-shell-side-list ()
-  "Show the side conversations that are open.
+  "Switch to one of the side conversations that are open.
 
-A side conversation lives until it is closed, so they collect quietly.
-Codex discards its own on navigating elsewhere, which does not port:
-Emacs users switch buffers constantly and that would throw away work
-mid-thought.  This is the view instead, saying what is still open, what
-each was forked from, and how long it has been sitting there.  Nothing is
-closed for you."
+Lists every side conversation in this Emacs, across parents and projects,
+because that is the scope the problem has: a side conversation lives
+until it is closed, so they collect quietly, and the ones whose parent is
+already gone are the easiest to forget.
+
+Codex discards its own on navigating elsewhere.  That does not port:
+Emacs users switch buffers constantly and it would throw away work
+mid-thought.  So this reports and switches.  Nothing is closed for you."
   (interactive)
-  (unless (agent-shell-side--list-buffers)
-    (user-error "No side conversations are open"))
-  (let ((buffer (get-buffer-create agent-shell-side-list-buffer-name)))
-    (with-current-buffer buffer
-      (agent-shell-side-list-mode)
-      (agent-shell-side-list--refresh)
-      (tabulated-list-print))
-    (pop-to-buffer buffer)))
+  (let ((candidates (agent-shell-side--list-candidates)))
+    (unless candidates
+      (user-error "No side conversations are open"))
+    (let* ((choice (completing-read "Side conversation: " candidates nil t))
+           (buffer (cdr (assoc choice candidates))))
+      (unless (buffer-live-p buffer)
+        (user-error "That side conversation is gone"))
+      (agent-shell-side--display buffer))))
 
 ;;;###autoload
 (defun agent-shell-side-describe ()

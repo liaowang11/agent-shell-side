@@ -861,55 +861,69 @@ hide the buffers most in need of attention."
         (kill-buffer parent))
       (should (memq side (agent-shell-side--list-buffers))))))
 
-(ert-deftest agent-shell-side-test-list-entries-describe-the-parent ()
-  "An entry names its parent and reports the parent's state."
+(ert-deftest agent-shell-side-test-list-label-describes-the-parent ()
+  "A candidate names its parent and reports the parent's state."
   (agent-shell-side-tests--with-parent
     (let ((side (agent-shell-side-tests--start-side parent)))
       (agent-shell-side--set-parent-status side 'needs-approval)
-      (let ((columns (cadr (assq side (agent-shell-side--list-entries)))))
-        (should (equal (aref columns 0) (buffer-name side)))
-        (should (equal (aref columns 1) (buffer-name parent)))
-        (should (equal (aref columns 2) "needs approval"))))))
+      (let ((label (agent-shell-side--list-label side)))
+        (should (string-match-p (regexp-quote (buffer-name side)) label))
+        (should (string-match-p (regexp-quote (buffer-name parent)) label))
+        (should (string-match-p "needs approval" label))))))
 
-(ert-deftest agent-shell-side-test-list-entries-mark-a-gone-parent ()
-  "An entry says so when the parent buffer is gone."
+(ert-deftest agent-shell-side-test-list-label-marks-a-gone-parent ()
+  "A candidate says so when the parent buffer is gone."
   (agent-shell-side-tests--with-parent
     (let ((side (agent-shell-side-tests--start-side parent)))
       (let ((kill-buffer-query-functions nil))
         (kill-buffer parent))
-      (let ((columns (cadr (assq side (agent-shell-side--list-entries)))))
-        (should (equal (aref columns 1) "(gone)"))
-        (should (equal (aref columns 2) "closed"))))))
+      (let ((label (agent-shell-side--list-label side)))
+        (should (string-match-p "gone" label))
+        (should (string-match-p "closed" label))))))
+
+(ert-deftest agent-shell-side-test-list-labels-stay-unique ()
+  "Two side conversations with the same name are still separable.
+
+`completing-read' returns a string, so candidates that collapse to one
+label would make the second one unreachable."
+  (agent-shell-side-tests--with-parent
+    (let ((first (agent-shell-side-tests--start-side parent))
+          (second (generate-new-buffer " *agent-shell side test twin*")))
+      (with-current-buffer second
+        (agent-shell-mode)
+        (setq agent-shell-side--is-side t)
+        (setq agent-shell-side--created-at (current-time))
+        (rename-buffer (buffer-name first) t))
+      (let ((candidates (agent-shell-side--list-candidates)))
+        (should (equal (length candidates) 2))
+        (should (equal (length (seq-uniq (mapcar #'car candidates))) 2))))))
 
 (ert-deftest agent-shell-side-test-list-refuses-when-there-are-none ()
-  "With nothing open, listing says so rather than showing an empty table."
+  "With nothing open, listing says so rather than prompting on an empty set."
   (agent-shell-side-tests--with-parent
     (should-error (agent-shell-side-list) :type 'user-error)))
 
-(ert-deftest agent-shell-side-test-list-shows-a-table ()
-  "Listing puts every open side conversation in the list buffer."
+(ert-deftest agent-shell-side-test-list-switches-to-the-choice ()
+  "Picking a candidate switches to that side conversation."
   (agent-shell-side-tests--with-parent
     (let ((side (agent-shell-side-tests--start-side parent)))
-      (unwind-protect
-          (save-window-excursion
-            (agent-shell-side-list)
-            (should (eq major-mode 'agent-shell-side-list-mode))
-            (should (assq side tabulated-list-entries)))
-        (when-let* ((buffer (get-buffer agent-shell-side-list-buffer-name)))
-          (kill-buffer buffer))))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (car (car collection)))))
+        (save-window-excursion
+          (agent-shell-side-list)
+          (should (eq (current-buffer) side)))))))
 
-(ert-deftest agent-shell-side-test-list-visits-the-side-conversation ()
-  "Selecting a row switches to that side conversation."
+(ert-deftest agent-shell-side-test-list-skips-a-buffer-killed-while-choosing ()
+  "A side conversation killed during the prompt is refused, not switched to."
   (agent-shell-side-tests--with-parent
     (let ((side (agent-shell-side-tests--start-side parent)))
-      (unwind-protect
-          (save-window-excursion
-            (agent-shell-side-list)
-            (goto-char (point-min))
-            (agent-shell-side-list-visit)
-            (should (eq (current-buffer) side)))
-        (when-let* ((buffer (get-buffer agent-shell-side-list-buffer-name)))
-          (kill-buffer buffer))))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (let ((kill-buffer-query-functions nil))
+                     (kill-buffer side))
+                   (car (car collection)))))
+        (should-error (agent-shell-side-list) :type 'user-error)))))
 
 (provide 'agent-shell-side-tests)
 
