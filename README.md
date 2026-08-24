@@ -31,9 +31,30 @@ one.
 | --- | --- | --- |
 | `agent-shell-side` | | Fork this conversation into a side one and switch to it |
 | `agent-shell-side-toggle` | `C-c C-b` | Switch between the side conversation and its parent |
-| `agent-shell-side-dismiss` | `C-c C-k` | Close the side conversation and return to the parent |
+| `agent-shell-side-conclude` | `C-c C-q` | Summarise the side conversation into the parent, then close it |
+| `agent-shell-side-dismiss` | `C-c C-k` | Close the side conversation, discarding what it learned |
 | `agent-shell-side-resume` | | Reopen a side conversation that was kept |
 | `agent-shell-side-describe` | | Echo what this buffer is and how to leave it |
+
+### Asking about part of an answer
+
+Select the passage in the parent conversation, then run `agent-shell-side`. The
+selection is carried in as a markdown block quote and you are asked for your
+question, so the side conversation opens pointing at exactly the part you meant.
+An empty question opens it blank.
+
+### Carrying findings back
+
+`agent-shell-side-conclude` (`C-c C-q`) asks the side conversation for a summary
+addressed to the parent, waits for it, puts it at the parent's prompt, and closes
+the side conversation. The summary is left for you to review rather than sent,
+because the parent may be mid-turn and dropping an unread block into a working
+conversation is the disruption a side conversation exists to avoid. Set
+`agent-shell-side-handback-submit` to send it instead.
+
+If the summary comes back empty, or the parent is gone, the side conversation is
+left open rather than closed on nothing. Customize
+`agent-shell-side-handback-prompt` to change what is asked for.
 
 While you are in the side conversation, the parent keeps running. When it
 finishes, fails, or asks for approval, the side conversation's mode line says so
@@ -55,6 +76,13 @@ agent:
 Neither is a sandbox. Like Codex's version, the restriction is instruction text
 the agent is asked to follow. The full text is in
 `agent-shell-side-boundary-prompt` and `agent-shell-side-instructions`.
+
+Both texts cancel the parent's *standing conventions* as well as its task. That
+clause is not decoration: against a live claude-agent-acp, a boundary without it
+left the fork still obeying an "end every reply with X" rule set in the parent.
+The model correctly declined to continue the parent's task, but read a formatting
+rule as a persistent convention rather than an instruction the boundary had
+cancelled. With the clause, the same probe came back clean.
 
 The inherited turns are hidden from the display, not from the model:
 `session/fork` does not replay history, so the side buffer starts empty while
@@ -107,6 +135,23 @@ in.
 Everything else uses public API: `agent-shell-start`, `agent-shell-get-config`,
 `agent-shell-shell-buffer`, `agent-shell-subscribe-to`, `agent-shell-status`,
 `agent-shell-interrupt`, and `agent-shell-agent-configs`.
+
+## What has been tested live
+
+Against claude-agent-acp 0.70, end to end:
+
+- `session/fork` returns a new session id, and the fork answers a question that
+  only the parent's history could answer, so history is inherited
+- the boundary block arrives as a second content block on the first prompt
+- the fork describes itself as a side conversation and declines to continue the
+  parent's task
+- a standing formatting instruction from the parent does *not* leak (it did
+  before the standing-conventions clause; see above)
+- `session/delete` succeeds
+
+Not yet exercised against a live agent: `agent-shell-side-conclude`'s handback,
+`agent-shell-side-resume`, and forking while the parent's turn is still in
+flight.
 
 ## Development
 

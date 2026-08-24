@@ -52,6 +52,19 @@
     (agent-shell-side--prepend-boundary request)
     (should (equal (length (map-nested-elt request '(:params prompt))) 1))))
 
+(ert-deftest agent-shell-side-test-boundary-cancels-standing-conventions ()
+  "Both instruction channels cancel the parent's standing conventions.
+
+Against a live claude-agent-acp, a boundary without this clause left the
+fork still obeying a \"end every reply with X\" rule from the parent: the
+model declined to continue the parent's task but read a formatting rule
+as a convention rather than a cancelled instruction."
+  (dolist (text (list agent-shell-side-boundary-prompt
+                      agent-shell-side-instructions))
+    (should (string-match-p "[Ss]tanding conventions" text))
+    (should (string-match-p "output format" text))
+    (should (string-match-p "persona" text))))
+
 ;;; Decorator
 
 (ert-deftest agent-shell-side-test-decorator-only-first-prompt ()
@@ -573,6 +586,218 @@ The mode line alone is easy to miss when the parent is off screen."
   (agent-shell-side-tests--with-parent
     (with-current-buffer parent
       (should-error (agent-shell-side-toggle) :type 'user-error))))
+
+;;; Opening message
+
+(ert-deftest agent-shell-side-test-quote ()
+  "A quoted selection is a markdown block quote."
+  (should (equal (agent-shell-side--quote "one\ntwo") "> one\n> two"))
+  (should (equal (agent-shell-side--quote "  padded  ") "> padded")))
+
+(ert-deftest agent-shell-side-test-quote-keeps-blank-lines-quoted ()
+  "Blank lines inside a selection stay inside the quote.
+
+An unprefixed blank line ends a markdown block quote, which would leave
+the rest of the selection reading as the user's own words."
+  (should (equal (agent-shell-side--quote "one\n\ntwo") "> one\n>\n> two")))
+
+(ert-deftest agent-shell-side-test-opening-message ()
+  "The opening message pairs any quoted selection with the question."
+  (should (equal (agent-shell-side--opening-message "sel" "why?")
+                 "> sel\n\nwhy?"))
+  (should (equal (agent-shell-side--opening-message nil "why?") "why?"))
+  (should (equal (agent-shell-side--opening-message "sel" nil) "> sel"))
+  (should-not (agent-shell-side--opening-message nil nil))
+  (should-not (agent-shell-side--opening-message "   " "  ")))
+
+(ert-deftest agent-shell-side-test-start-sends-opening-message-when-ready ()
+  "An opening message is sent once the forked shell is ready, not before.
+
+The fork is asynchronous, so submitting at once would race session
+creation."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-test-inserted nil)
+           (side (with-current-buffer parent
+                   (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+                     (agent-shell-side "why?"))))
+           (handler (nth 2 (seq-find (lambda (subscription)
+                                       (eq (nth 1 subscription) 'prompt-ready))
+                                     agent-shell-test-subscriptions))))
+      (should handler)
+      (should-not agent-shell-test-inserted)
+      (funcall handler '((:event . prompt-ready)))
+      (let ((insertion (car agent-shell-test-inserted)))
+        (should (equal (map-elt insertion :text) "why?"))
+        (should (map-elt insertion :submit))
+        (should (eq (map-elt insertion :shell-buffer) side))))))
+
+(ert-deftest agent-shell-side-test-opening-message-sent-once ()
+  "A later prompt does not resend the opening message.
+
+`prompt-ready' is emitted per prompt, so an unguarded handler would
+resend the question after every turn."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-test-inserted nil)
+           (_side (with-current-buffer parent
+                    (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+                      (agent-shell-side "why?"))))
+           (handler (nth 2 (seq-find (lambda (subscription)
+                                       (eq (nth 1 subscription) 'prompt-ready))
+                                     agent-shell-test-subscriptions))))
+      (funcall handler '((:event . prompt-ready)))
+      (funcall handler '((:event . prompt-ready)))
+      (should (equal (length agent-shell-test-inserted) 1)))))
+
+(ert-deftest agent-shell-side-test-start-without-message-sends-nothing ()
+  "Starting empty leaves the side conversation waiting for input."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-test-inserted nil))
+      (with-current-buffer parent
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (agent-shell-side)))
+      (when-let* ((handler (nth 2 (seq-find
+                                   (lambda (subscription)
+                                     (eq (nth 1 subscription) 'prompt-ready))
+                                   agent-shell-test-subscriptions))))
+        (funcall handler '((:event . prompt-ready))))
+      (should-not agent-shell-test-inserted))))
+
+(defmacro agent-shell-side-tests--silently (&rest body)
+  "Evaluate BODY collecting `message' output instead of printing it.
+
+Returns the messages, newest first, so a test can assert on them without
+the suite's own output carrying them."
+  (declare (indent 0))
+  `(let ((agent-shell-side-tests--messages nil))
+     (cl-letf (((symbol-function 'message)
+                (lambda (format &rest args)
+                  (push (apply #'format format args)
+                        agent-shell-side-tests--messages))))
+       ,@body)
+     agent-shell-side-tests--messages))
+
+(defvar agent-shell-side-tests--messages nil
+  "Messages captured by `agent-shell-side-tests--silently'.")
+
+;;; Handback
+
+(ert-deftest agent-shell-side-test-handback-text ()
+  "Findings arrive in the parent under a header naming where they came from."
+  (let ((agent-shell-side-handback-header "Findings from a side conversation:"))
+    (should (equal (agent-shell-side--handback-text "  it pulls tokio-util  ")
+                   "Findings from a side conversation:\n\nit pulls tokio-util"))))
+
+(ert-deftest agent-shell-side-test-conclude-asks-for-a-summary ()
+  "Concluding sends the summary request into the side conversation."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-test-inserted nil))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (agent-shell-side-conclude)))
+      (let ((insertion (car agent-shell-test-inserted)))
+        (should (eq (map-elt insertion :shell-buffer) side))
+        (should (map-elt insertion :submit))
+        (should (equal (map-elt insertion :text)
+                       agent-shell-side-handback-prompt))))))
+
+(ert-deftest agent-shell-side-test-conclude-hands-findings-to-parent ()
+  "The summarised turn is inserted into the parent, and the side closes."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-test-inserted nil))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (agent-shell-side-conclude)))
+      (let ((handler (nth 2 (seq-find (lambda (subscription)
+                                        (and (eq (nth 0 subscription) side)
+                                             (null (nth 1 subscription))))
+                                      agent-shell-test-subscriptions))))
+        (should handler)
+        (funcall handler '((:event . agent-message-chunk)
+                           (:data . ((:text-chunk . "it pulls ")))))
+        (funcall handler '((:event . agent-message-chunk)
+                           (:data . ((:text-chunk . "tokio-util")))))
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (funcall handler '((:event . turn-complete)
+                             (:data . ((:stop-reason . "end_turn")))))))
+      (let ((handback (seq-find (lambda (insertion)
+                                  (eq (map-elt insertion :shell-buffer) parent))
+                                agent-shell-test-inserted)))
+        (should handback)
+        (should (string-suffix-p "it pulls tokio-util" (map-elt handback :text)))
+        (should-not (map-elt handback :submit)))
+      (should-not (buffer-live-p side)))))
+
+(ert-deftest agent-shell-side-test-conclude-can-submit-in-parent ()
+  "With `agent-shell-side-handback-submit', the findings are sent, not staged."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-side-handback-submit t)
+           (agent-shell-test-inserted nil))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (agent-shell-side-conclude)))
+      (let ((handler (nth 2 (seq-find (lambda (subscription)
+                                        (and (eq (nth 0 subscription) side)
+                                             (null (nth 1 subscription))))
+                                      agent-shell-test-subscriptions))))
+        (funcall handler '((:event . agent-message-chunk)
+                           (:data . ((:text-chunk . "done")))))
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (funcall handler '((:event . turn-complete)
+                             (:data . ((:stop-reason . "end_turn")))))))
+      (should (map-elt (seq-find (lambda (insertion)
+                                   (eq (map-elt insertion :shell-buffer) parent))
+                                 agent-shell-test-inserted)
+                       :submit)))))
+
+(ert-deftest agent-shell-side-test-conclude-keeps-side-open-when-empty ()
+  "A turn that produced no text leaves the side conversation open.
+
+Closing on an empty summary would throw away the conversation and hand
+the parent nothing."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-test-inserted nil))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (agent-shell-side-conclude)))
+      (let ((handler (nth 2 (seq-find (lambda (subscription)
+                                        (and (eq (nth 0 subscription) side)
+                                             (null (nth 1 subscription))))
+                                      agent-shell-test-subscriptions))))
+        (should (seq-find
+                 (lambda (line) (string-match-p "no summary came back" line))
+                 (agent-shell-side-tests--silently
+                   (funcall handler '((:event . turn-complete)
+                                      (:data . ((:stop-reason . "end_turn")))))))))
+      (should (buffer-live-p side))
+      (should-not (seq-find (lambda (insertion)
+                              (eq (map-elt insertion :shell-buffer) parent))
+                            agent-shell-test-inserted)))))
+
+(ert-deftest agent-shell-side-test-conclude-refuses-while-busy ()
+  "A side conversation mid-turn is not asked to summarise on top of it."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-test-status 'busy))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (should-error (agent-shell-side-conclude) :type 'user-error))))))
+
+(ert-deftest agent-shell-side-test-conclude-refuses-without-parent ()
+  "With no parent to hand findings to, concluding is refused."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (should-error (agent-shell-side-conclude) :type 'user-error)))
+      (should (buffer-live-p side)))))
 
 (provide 'agent-shell-side-tests)
 

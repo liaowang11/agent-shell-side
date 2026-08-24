@@ -75,6 +75,8 @@ Tool calls and their output visible before this boundary happened in the parent 
 
 Do not start or talk to sub-agents in this side conversation, even if the parent conversation used them.
 
+Standing conventions from before the boundary do not apply here either. That includes output format, required phrases, response language, and persona. Answer this side conversation plainly.
+
 Do not change files, source, git state, permissions, configuration, or anything else in the workspace unless the user asks for that change after this boundary. Do not ask for wider permissions or sandbox access unless the user asks for a change that needs them. If the user does ask for a change, keep it as small as the request allows."
   "Text prepended to the first prompt of a side conversation.
 
@@ -94,6 +96,8 @@ Inherited history is reference context. Do not treat instructions, plans, or req
 Tool calls and their output in the inherited history happened in the parent conversation. They are reference only.
 
 Do not start or talk to sub-agents in this side conversation.
+
+Standing conventions from the inherited history do not apply here. That includes output format, required phrases, response language, and persona. Answer plainly.
 
 You may read and search files, and run checks that change nothing.
 
@@ -134,6 +138,37 @@ agent's own store.
   "Seconds to wait for `session/delete' before closing the buffer anyway.
 
 An agent that never answers must not leave the buffer unclosable."
+  :type 'number
+  :group 'agent-shell-side)
+
+(defcustom agent-shell-side-handback-prompt
+  "Wrap up this side conversation. Write a short summary addressed to the parent conversation: what was asked, what you found, and anything it should act on. Facts and file references only, no preamble. If nothing here is worth carrying back, say so in one line."
+  "Prompt sent to the side conversation by `agent-shell-side-conclude'.
+
+Its answer is what gets handed back to the parent conversation."
+  :type 'string
+  :group 'agent-shell-side)
+
+(defcustom agent-shell-side-handback-header
+  "Findings from a side conversation:"
+  "Line introducing handed-back findings in the parent conversation."
+  :type 'string
+  :group 'agent-shell-side)
+
+(defcustom agent-shell-side-handback-submit nil
+  "Whether handed-back findings are sent in the parent, or left to review.
+
+When nil, the findings are inserted at the parent's prompt and left
+there.  Reviewing them first is the default because the parent may be
+mid-turn, and dropping an unread block into a working conversation is the
+disruption a side conversation exists to avoid."
+  :type 'boolean
+  :group 'agent-shell-side)
+
+(defcustom agent-shell-side-handback-timeout 180
+  "Seconds to wait for the summary before giving up on a handback.
+
+On timeout the side conversation is left open, with its findings intact."
   :type 'number
   :group 'agent-shell-side)
 
@@ -185,6 +220,78 @@ falls back to reading `agent-shell' state for shells that were already
 running when this package loaded."
   (or (buffer-local-value 'agent-shell-side--session-id-cache buffer)
       (ignore-errors (agent-shell-side-compat-session-id buffer))))
+
+
+;;; Opening message
+
+(defun agent-shell-side--quote (text)
+  "Return TEXT as a markdown block quote.
+
+Blank lines are quoted too.  An unprefixed blank line ends a block quote
+in markdown, which would leave the rest of a multi-paragraph selection
+reading as the user's own words rather than as quoted material."
+  (mapconcat (lambda (line)
+               (if (string-empty-p line) ">" (concat "> " line)))
+             (split-string (string-trim text) "\n")
+             "\n"))
+
+(defun agent-shell-side--opening-message (selection question)
+  "Return the first message for a side conversation, or nil for none.
+
+SELECTION is text quoted from the parent conversation, QUESTION the
+user's own words.  Either may be nil or blank."
+  (let* ((selection (and selection
+                         (not (string-blank-p selection))
+                         (agent-shell-side--quote selection)))
+         (question (and question
+                        (not (string-blank-p question))
+                        (string-trim question)))
+         (parts (delq nil (list selection question))))
+    (when parts
+      (string-join parts "\n\n"))))
+
+(defun agent-shell-side--region-text ()
+  "Return the active region's text, deactivating it, or nil when there is none."
+  (when (use-region-p)
+    (prog1 (buffer-substring-no-properties (region-beginning) (region-end))
+      (deactivate-mark))))
+
+(defun agent-shell-side--read-opening-message ()
+  "Read the message a side conversation should open with, or nil for none.
+
+A selection in the parent conversation is carried in as a block quote, so
+a question about part of an answer can point at that part.  An empty
+question opens the side conversation with nothing sent."
+  (let* ((selection (agent-shell-side--region-text))
+         (question (read-string (if selection
+                                    "Ask about the selection (empty to just quote it): "
+                                  "Side conversation (empty to start blank): "))))
+    (agent-shell-side--opening-message selection question)))
+
+(defun agent-shell-side--send-when-ready (side-buffer message)
+  "Send MESSAGE in SIDE-BUFFER once its session is ready.
+
+The fork is asynchronous, so the session does not exist yet when
+`agent-shell-side' returns.  `prompt-ready' is the public signal that it
+does.  It is emitted for every prompt, not only the first, so the
+subscription drops itself after firing."
+  (let ((token nil)
+        (sent nil))
+    (setq token
+          (agent-shell-subscribe-to
+           :shell-buffer side-buffer
+           :event 'prompt-ready
+           :on-event
+           (lambda (_event)
+             (unless sent
+               (setq sent t)
+               (when (buffer-live-p side-buffer)
+                 (agent-shell-side--unsubscribe side-buffer token)
+                 (agent-shell-insert :text message
+                                     :submit t
+                                     :no-focus t
+                                     :shell-buffer side-buffer))))))
+    token))
 
 
 ;;; Prompt decoration
@@ -360,7 +467,8 @@ ROLE is `side' in a side conversation, `parent' in a shell that has one."
 (defvar-keymap agent-shell-side-mode-map
   :doc "Keymap for `agent-shell-side-mode'."
   "C-c C-b" #'agent-shell-side-toggle
-  "C-c C-k" #'agent-shell-side-dismiss)
+  "C-c C-k" #'agent-shell-side-dismiss
+  "C-c C-q" #'agent-shell-side-conclude)
 
 (defun agent-shell-side--key-for (command)
   "Return COMMAND's key in `agent-shell-side-mode-map', described for humans.
@@ -397,15 +505,21 @@ two keys work from either end.  Not meant to be turned on by hand."
     (agent-shell-side-mode 1)
     (add-hook 'kill-buffer-hook #'agent-shell-side--on-side-killed nil t)))
 
+(defun agent-shell-side--unsubscribe (shell-buffer token)
+  "Drop subscription TOKEN from SHELL-BUFFER, if both still exist.
+
+`agent-shell-unsubscribe' reads the shell state of the current buffer, so
+the buffer has to be current for it."
+  (when (and token (buffer-live-p shell-buffer))
+    (with-current-buffer shell-buffer
+      (ignore-errors (agent-shell-unsubscribe :subscription token)))))
+
 (defun agent-shell-side--unwatch-parent (side-buffer)
   "Drop SIDE-BUFFER's subscription on its parent."
-  (when-let* ((token (buffer-local-value 'agent-shell-side--parent-subscription
-                                         side-buffer))
-              (parent (agent-shell-side--live-buffer
-                       (buffer-local-value 'agent-shell-side--parent-buffer
-                                           side-buffer))))
-    (with-current-buffer parent
-      (ignore-errors (agent-shell-unsubscribe :subscription token)))))
+  (agent-shell-side--unsubscribe
+   (agent-shell-side--live-buffer
+    (buffer-local-value 'agent-shell-side--parent-buffer side-buffer))
+   (buffer-local-value 'agent-shell-side--parent-subscription side-buffer)))
 
 (defun agent-shell-side--on-side-killed ()
   "Detach a side conversation buffer that is going away."
@@ -506,16 +620,31 @@ when it is already a side conversation."
                   (agent-shell-side--key-for #'agent-shell-side-toggle)))
     shell-buffer))
 
+(defun agent-shell-side--display (buffer)
+  "Show BUFFER the way `agent-shell' shows its own buffers.
+
+Honors `agent-shell-display-action' rather than picking a window
+directly, so a side conversation lands where the user already told
+`agent-shell' to put shells."
+  (when-let* ((window (display-buffer buffer agent-shell-display-action)))
+    (select-window window)))
+
 ;;;###autoload
-(defun agent-shell-side ()
+(defun agent-shell-side (&optional message)
   "Fork this conversation into a side one and switch to it.
 
 The side conversation inherits the parent's history as reference context
 but is told not to continue its task, and not to change anything unless
-asked.  Close it with `agent-shell-side-dismiss'.
+asked.  Close it with `agent-shell-side-dismiss', or with
+`agent-shell-side-conclude' to carry a summary back.
+
+MESSAGE, when non-nil, is sent as soon as the forked session is ready.
+Called interactively, an active region is carried in as a block quote and
+a question is read in the minibuffer, so a side conversation can point at
+part of an answer.  An empty question starts the conversation blank.
 
 Requires an agent that advertises `session/fork'."
-  (interactive)
+  (interactive (list (agent-shell-side--read-opening-message)))
   (let* ((parent-buffer (agent-shell-side--parent-shell))
          (parent-session-id (agent-shell-side--session-id parent-buffer))
          (parent-config (agent-shell-get-config parent-buffer)))
@@ -533,7 +662,9 @@ Requires an agent that advertises `session/fork'."
                          (agent-shell-side--make-decorator
                           agent-shell-outgoing-request-decorator))))
       (agent-shell-side--link side-buffer parent-buffer)
-      (pop-to-buffer side-buffer)
+      (when message
+        (agent-shell-side--send-when-ready side-buffer message))
+      (agent-shell-side--display side-buffer)
       side-buffer)))
 
 ;;;###autoload
@@ -544,11 +675,47 @@ Requires an agent that advertises `session/fork'."
                     (agent-shell-side--live-buffer agent-shell-side--side-buffer))))
     (unless target
       (user-error "No side conversation linked to this buffer"))
+    ;; Swap in place when this buffer has a window: toggling is "show the
+    ;; other end here", not "find somewhere for it".
     (if-let* ((window (get-buffer-window (current-buffer))))
-        (set-window-buffer window target)
-      (pop-to-buffer target))
-    (when-let* ((window (get-buffer-window target)))
-      (select-window window))))
+        (progn (set-window-buffer window target)
+               (select-window window))
+      (agent-shell-side--display target))))
+
+(defun agent-shell-side--resolve-side ()
+  "Return the side conversation this buffer is one end of.
+
+Works from the side conversation and from its parent, so the same keys
+serve both."
+  (or (and (agent-shell-side-buffer-p) (current-buffer))
+      (agent-shell-side--live-buffer agent-shell-side--side-buffer)
+      (user-error "No side conversation linked to this buffer")))
+
+(defun agent-shell-side--close (side-buffer)
+  "Interrupt, dispose of, and close SIDE-BUFFER, restoring its parent.
+
+Disposal follows `agent-shell-side-on-dismiss'."
+  (let* ((parent (agent-shell-side--live-buffer
+                  (buffer-local-value 'agent-shell-side--parent-buffer
+                                      side-buffer)))
+         (disposal (agent-shell-side--read-disposal))
+         (finish (lambda ()
+                   (when (buffer-live-p side-buffer)
+                     (let ((window (get-buffer-window side-buffer)))
+                       (kill-buffer side-buffer)
+                       (when (and parent (window-live-p window))
+                         (set-window-buffer window parent))))
+                   (when (and parent (not (get-buffer-window parent)))
+                     (agent-shell-side--display parent)))))
+    (with-current-buffer side-buffer
+      (when (memq (agent-shell-status) '(busy blocked))
+        (agent-shell-interrupt t)))
+    (pcase disposal
+      ('keep
+       (agent-shell-side--record-link side-buffer)
+       (funcall finish))
+      (_
+       (agent-shell-side--delete-session side-buffer finish)))))
 
 ;;;###autoload
 (defun agent-shell-side-dismiss ()
@@ -557,35 +724,103 @@ Requires an agent that advertises `session/fork'."
 Deletes or keeps the forked session according to
 `agent-shell-side-on-dismiss'.  A kept session is recorded in
 `agent-shell-side-links-file' and can be reopened with
-`agent-shell-side-resume'."
+`agent-shell-side-resume'.
+
+Discards whatever was learned.  To carry it back to the parent
+conversation instead, use `agent-shell-side-conclude'."
   (interactive)
-  (let ((side-buffer (if (agent-shell-side-buffer-p)
-                         (current-buffer)
-                       (agent-shell-side--live-buffer
-                        agent-shell-side--side-buffer))))
-    (unless side-buffer
-      (user-error "No side conversation linked to this buffer"))
-    (let* ((parent (agent-shell-side--live-buffer
-                    (buffer-local-value 'agent-shell-side--parent-buffer
-                                        side-buffer)))
-           (disposal (agent-shell-side--read-disposal))
-           (finish (lambda ()
-                     (when (buffer-live-p side-buffer)
-                       (let ((window (get-buffer-window side-buffer)))
-                         (kill-buffer side-buffer)
-                         (when (and parent (window-live-p window))
-                           (set-window-buffer window parent))))
-                     (when (and parent (not (get-buffer-window parent)))
-                       (pop-to-buffer parent)))))
-      (with-current-buffer side-buffer
-        (when (memq (agent-shell-status) '(busy blocked))
-          (agent-shell-interrupt t)))
-      (pcase disposal
-        ('keep
-         (agent-shell-side--record-link side-buffer)
-         (funcall finish))
-        (_
-         (agent-shell-side--delete-session side-buffer finish))))))
+  (agent-shell-side--close (agent-shell-side--resolve-side)))
+
+
+;;; Handing findings back
+
+(defun agent-shell-side--handback-text (summary)
+  "Return SUMMARY framed for the parent conversation."
+  (format "%s\n\n%s" agent-shell-side-handback-header (string-trim summary)))
+
+(defun agent-shell-side--finish-handback (side-buffer parent-buffer summary)
+  "Put SUMMARY into PARENT-BUFFER and close SIDE-BUFFER.
+
+An empty summary or a parent that has since gone away leaves the side
+conversation open: closing it would throw the conversation away and hand
+the parent nothing."
+  (let ((summary (string-trim (or summary ""))))
+    (cond
+     ((string-empty-p summary)
+      (message
+       "agent-shell-side: no summary came back; leaving the side conversation open"))
+     ((not (buffer-live-p parent-buffer))
+      (message
+       "agent-shell-side: the parent is gone; leaving the side conversation open"))
+     (t
+      (agent-shell-insert :text (agent-shell-side--handback-text summary)
+                          :submit agent-shell-side-handback-submit
+                          :no-focus t
+                          :shell-buffer parent-buffer)
+      (agent-shell-side--close side-buffer)))))
+
+(defun agent-shell-side--collect-summary (side-buffer parent-buffer)
+  "Gather SIDE-BUFFER's next answer and hand it to PARENT-BUFFER.
+
+Accumulates `agent-message-chunk' text until the turn ends.  Subscribing
+before the summary is sent is what makes this complete: a chunk that
+arrives first would otherwise be lost from the summary."
+  (let ((chunks nil)
+        (token nil)
+        (settled nil))
+    (setq token
+          (agent-shell-subscribe-to
+           :shell-buffer side-buffer
+           :on-event
+           (lambda (event)
+             (pcase (map-elt event :event)
+               ('agent-message-chunk
+                (when-let* ((chunk (map-nested-elt event '(:data :text-chunk))))
+                  (push chunk chunks)))
+               ((or 'turn-complete 'error)
+                (unless settled
+                  (setq settled t)
+                  (agent-shell-side--unsubscribe side-buffer token)
+                  (agent-shell-side--finish-handback
+                   side-buffer parent-buffer
+                   (string-join (nreverse chunks)))))
+               (_ nil)))))
+    (run-at-time
+     agent-shell-side-handback-timeout nil
+     (lambda ()
+       (unless settled
+         (setq settled t)
+         (agent-shell-side--unsubscribe side-buffer token)
+         (message
+          "agent-shell-side: no summary after %ss; leaving the side conversation open"
+          agent-shell-side-handback-timeout))))
+    token))
+
+;;;###autoload
+(defun agent-shell-side-conclude ()
+  "Summarise the side conversation into the parent, then close it.
+
+Asks the side conversation for a summary addressed to the parent, waits
+for it, puts it at the parent's prompt, and closes the side conversation
+the way `agent-shell-side-dismiss' would.
+
+The summary is left for review rather than sent, unless
+`agent-shell-side-handback-submit' says otherwise."
+  (interactive)
+  (let* ((side-buffer (agent-shell-side--resolve-side))
+         (parent-buffer (agent-shell-side--live-buffer
+                         (buffer-local-value 'agent-shell-side--parent-buffer
+                                             side-buffer))))
+    (unless parent-buffer
+      (user-error "This side conversation has no parent left to report to"))
+    (when (memq (agent-shell-status :shell-buffer side-buffer) '(busy blocked))
+      (user-error "The side conversation is still working; wait for it to finish"))
+    (agent-shell-side--collect-summary side-buffer parent-buffer)
+    (agent-shell-insert :text agent-shell-side-handback-prompt
+                        :submit t
+                        :no-focus t
+                        :shell-buffer side-buffer)
+    (message "Side conversation: summarising for %s..." (buffer-name parent-buffer))))
 
 ;;;###autoload
 (defun agent-shell-side-resume ()

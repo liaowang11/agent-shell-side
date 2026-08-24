@@ -35,6 +35,24 @@
 (defvar agent-shell-test-status 'ready
   "Value `agent-shell-status' returns.")
 
+(defvar agent-shell-test-inserted nil
+  "Calls to `agent-shell-insert', newest first, as alists.")
+
+(defvar agent-shell-display-action '(display-buffer-same-window))
+
+(cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
+  "Record an insertion instead of touching a shell."
+  (push (list (cons :text text)
+              (cons :submit submit)
+              (cons :no-focus no-focus)
+              (cons :shell-buffer (or shell-buffer (current-buffer))))
+        agent-shell-test-inserted)
+  nil)
+
+(defun agent-shell-cwd ()
+  "Return the stubbed working directory."
+  default-directory)
+
 (cl-defun agent-shell-shell-buffer (&key viewport-buffer no-error no-create)
   "Return the current buffer when it is a shell."
   (ignore viewport-buffer no-create)

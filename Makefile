@@ -1,16 +1,21 @@
 EMACS ?= emacs
 
+# load-prefer-newer everywhere: `make compile` leaves .elc files behind, and
+# without it a later `make test` silently runs the stale compiled copy
+# instead of the source being edited.
+BATCH = $(EMACS) -Q --batch --eval '(setq load-prefer-newer t)'
+
 .PHONY: compile test check clean
 
 compile:
-	$(EMACS) -Q --batch -L . -L tests/support \
+	$(BATCH) -L . -L tests/support \
 		-f batch-byte-compile \
 		agent-shell-side-compat.el \
 		agent-shell-side-links.el \
 		agent-shell-side.el
 
 test:
-	$(EMACS) -Q --batch -L . -L tests/support -L tests \
+	$(BATCH) -L . -L tests/support -L tests \
 		-l tests/agent-shell-side-tests.el \
 		-f ert-run-tests-batch-and-exit
 

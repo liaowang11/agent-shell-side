@@ -53,8 +53,14 @@ Only written for side conversations dismissed with `keep'.  See
   :type 'file
   :group 'agent-shell-side)
 
-(defconst agent-shell-side-boundary-version 1
+(defconst agent-shell-side-boundary-version 2
   "Revision of the side boundary and instruction text.
+
+Revision 2 added the clause about standing conventions.  Without it a
+live claude-agent-acp fork kept obeying a \"end every reply with X\"
+instruction from the parent conversation: the model correctly declined to
+continue the parent's *task*, but read a formatting rule as a persistent
+convention rather than an instruction the boundary had cancelled.
 
 Bumped whenever `agent-shell-side-boundary-prompt' or
 `agent-shell-side-instructions' changes in a way that matters to a
