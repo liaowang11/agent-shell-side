@@ -334,6 +334,7 @@ neither means the store is damaged."
 The buffer looks like a started session on an agent that can fork."
   (declare (indent 0))
   `(let ((parent (generate-new-buffer " *agent-shell side test parent*"))
+         (agent-shell-test-history '(("hello" . "hi there")))
          (agent-shell-test-subscriptions nil)
          (agent-shell-test-unsubscribed nil)
          (agent-shell-test-started nil)
@@ -397,6 +398,32 @@ The buffer looks like a started session on an agent that can fork."
     (with-current-buffer parent
       (setf (alist-get :session agent-shell--state) nil)
       (should-error (agent-shell-side) :type 'user-error))))
+
+(ert-deftest agent-shell-side-test-start-requires-a-taken-turn ()
+  "A conversation that has said nothing yet is refused before forking.
+
+Having a session id is not enough.  `session/new' hands one out before
+anything is said, and claude-agent-acp answers `session/fork' with -32002
+Resource not found until there is a transcript to copy."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-test-history nil))
+      (with-current-buffer parent
+        (should-error (agent-shell-side) :type 'user-error))
+      (should-not agent-shell-test-started))))
+
+(ert-deftest agent-shell-side-test-start-allows-a-resumed-conversation ()
+  "A resumed conversation forks even though its buffer is empty.
+
+Resuming replays nothing into the buffer, so its history reads as empty
+while the session behind it is full.  Verified live: forking a resumed
+shell inherits the parent's history and answers from it."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-test-history nil))
+      (with-current-buffer parent
+        (setf (alist-get :resume-session-id agent-shell--state) "parent-1")
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (should (agent-shell-side))))
+      (should agent-shell-test-started))))
 
 (ert-deftest agent-shell-side-test-start-requires-fork-capability ()
   "An agent without `session/fork' is refused rather than silently emptied.

@@ -95,20 +95,32 @@ went nowhere. Two live probes forked a freshly started parent and failed
 this way, and one of them passed anyway, because "the side conversation
 stayed open" is true of a dead one too.
 
-Fixed in two places. `agent-shell-side--watch-startup` closes the fork and
-says why when an error arrives before any session is selected, which
-covers this cause and any other. The harness now routes every fork
-through `agent-shell-side-live--fork`, which fails loudly when the fork
-never reaches a prompt, so a dead fork can no longer be reported as a
-pass.
+Fixed in three places.
 
-Codex refuses the same case up front, keyed off its own error text
-("includeTurns is unavailable before first user message",
-codex-rs/tui/src/app/side.rs:620-629). A pre-flight refusal would be
-better UX than closing after the fact. It needs a reliable way to ask
-"has this conversation taken a turn", which `agent-shell` does not
-expose; `shell-maker-history` scrapes the buffer and is unreliable at
-prompt boundaries. Left as a follow-up.
+`agent-shell-side--conversation-started-p` refuses up front, as Codex
+does (keyed there off its own error text, "includeTurns is unavailable
+before first user message", codex-rs/tui/src/app/side.rs:620-629). I had
+first written this off, on a note that `shell-maker-history` is
+unreliable at prompt boundaries. Bill pushed back, and measuring settled
+it: a fresh shell reads 0 exchanges while already holding a session id, a
+shell with one turn reads 1. The note was about a harder question, which
+prompt is at point, not whether the history is empty at all.
+
+Measuring also found the trap in the obvious version of the guard. A
+resumed shell reads 0 exchanges too, because resuming replays nothing
+into the buffer, yet forking one demonstrably works and inherits the
+history. So the guard passes a shell that was resumed by id, read through
+`agent-shell-side-compat-resumed-p`. Keying only on the buffer would have
+refused a fork that works.
+
+`agent-shell-side--watch-startup` stays as the backstop, closing the fork
+and repeating the agent's error when a session never gets selected. The
+guard covers the cause we know; this covers the rest.
+
+The harness routes every fork through `agent-shell-side-live--fork`,
+which fails loudly when a fork never reaches a prompt, so a dead fork can
+no longer be reported as a pass, and a probe covers both halves of the
+refusal.
 
 ## 3. Side-buffer accumulation
 

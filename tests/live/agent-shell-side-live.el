@@ -43,6 +43,7 @@
 (require 'cl-lib)
 (require 'map)
 (require 'seq)
+(require 'shell-maker)
 (require 'subr-x)
 
 (defvar agent-shell-side-live-timeout 120
@@ -417,6 +418,48 @@ and the summary arriving."
       (when (file-exists-p agent-shell-side-links-file)
         (delete-file agent-shell-side-links-file)))))
 
+(defun agent-shell-side-live--probe-refuses-a-turnless-conversation ()
+  "Refuse to fork a conversation that has said nothing, but not a resumed one.
+
+claude-agent-acp answers `session/fork' with -32002 Resource not found
+until the session has a transcript.  A resumed session has one even
+though its buffer looks empty, so the refusal has to tell those apart or
+it blocks a fork that works."
+  (let ((parent (agent-shell-side-live--start-parent))
+        (resumed nil))
+    (unwind-protect
+        (progn
+          (agent-shell-side-live--check
+           "a conversation that has said nothing is refused"
+           (condition-case nil
+               (progn (with-current-buffer parent (agent-shell-side "hello")) nil)
+             (user-error t))
+           "refused up front, rather than leaving a shell whose session never starts")
+          (agent-shell-side-live--start-conversation parent)
+          (let ((session (agent-shell-side--session-id parent)))
+            (agent-shell-side-live--kill parent)
+            (setq parent nil)
+            (setq resumed (agent-shell-start
+                           :config (agent-shell-anthropic-make-claude-code-config)
+                           :session-id session))
+            (agent-shell-side-live--wait-ready resumed))
+          (agent-shell-side-live--observe
+           "a resumed conversation reads as empty"
+           (format "its buffer holds %d exchanges, so an empty buffer cannot mean an unforkable session"
+                   (with-current-buffer resumed (length (shell-maker-history)))))
+          (let ((side (agent-shell-side-live--fork
+                       resumed
+                       "What token were you asked to remember? Reply with just the token.")))
+            (unwind-protect
+                (let ((answer (agent-shell-side-live--collect side)))
+                  (agent-shell-side-live--check
+                   "a resumed conversation can still be forked"
+                   (string-match-p (regexp-quote agent-shell-side-live-token) answer)
+                   (format "the fork should inherit the resumed history; it said: %s"
+                           (agent-shell-side-live--excerpt answer))))
+              (agent-shell-side-live--kill side))))
+      (agent-shell-side-live--kill resumed parent))))
+
 (defun agent-shell-side-live--probe-mid-turn-fork ()
   "Fork while the parent's turn is still running.
 
@@ -481,6 +524,7 @@ approve a change to run it."
     agent-shell-side-live--probe-handback
     agent-shell-side-live--probe-handback-loses-its-parent
     agent-shell-side-live--probe-resume
+    agent-shell-side-live--probe-refuses-a-turnless-conversation
     agent-shell-side-live--probe-mid-turn-fork)
   "Probes run by `agent-shell-side-live-run', in order.
 

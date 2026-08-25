@@ -183,9 +183,14 @@ claude-agent-acp 0.70:
 One limit the live run found: **a conversation that has not taken a turn cannot
 be forked.** claude-agent-acp answers `session/fork` with `-32002 Resource not
 found`, because there is no transcript to fork yet. Having a session id is not
-enough. The fork is now closed with an explanation when this happens, rather
-than leaving a shell whose input goes nowhere. Codex refuses the same case up
-front.
+enough — `session/new` hands one out before anything is said.
+
+`agent-shell-side` refuses that up front, as Codex does, and asks you to send a
+message first. The test is whether the conversation holds a completed exchange,
+or was resumed by id: a resumed session replays nothing into its buffer, so it
+reads as empty while the session behind it is full, and forking one works.
+Should a fork fail anyway, the side conversation is closed with the agent's own
+error rather than left as a shell whose input goes nowhere.
 
 ## Development
 

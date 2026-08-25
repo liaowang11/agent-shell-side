@@ -54,6 +54,7 @@
 (require 'agent-shell-side-links)
 (require 'map)
 (require 'seq)
+(require 'shell-maker)
 (eval-when-compile (require 'cl-lib))
 
 (defvar agent-shell-agent-configs)
@@ -686,6 +687,21 @@ when it is already a side conversation."
                   (agent-shell-side--key-for #'agent-shell-side-toggle)))
     shell-buffer))
 
+(defun agent-shell-side--conversation-started-p (shell-buffer)
+  "Return non-nil when SHELL-BUFFER holds a conversation that can be forked.
+
+A session id is not enough.  `session/new' hands one out before anything
+has been said, and claude-agent-acp answers `session/fork' with -32002
+Resource not found while the session still has no transcript to copy.
+
+A completed exchange in the buffer proves there is one.  So does having
+been resumed by id: resuming replays nothing into the buffer, so its
+history reads as empty while the session behind it is full, and forking
+one works."
+  (or (agent-shell-side-compat-resumed-p shell-buffer)
+      (with-current-buffer shell-buffer
+        (and (ignore-errors (shell-maker-history)) t))))
+
 (defun agent-shell-side--display (buffer)
   "Show BUFFER the way `agent-shell' shows its own buffers.
 
@@ -717,6 +733,9 @@ Requires an agent that advertises `session/fork'."
     (unless parent-session-id
       (user-error
        "This conversation has not started yet; send a message, then try again"))
+    (unless (agent-shell-side--conversation-started-p parent-buffer)
+      (user-error
+       "This conversation has not taken a turn yet; send a message, then try again"))
     (unless (agent-shell-side-compat-supports-fork-p parent-buffer)
       (user-error "%s cannot fork sessions, so it cannot hold a side conversation"
                   (or (map-elt parent-config :mode-line-name) "This agent")))

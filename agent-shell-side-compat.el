@@ -73,6 +73,16 @@ The capability is recorded at `initialize' from
   "Return SHELL-BUFFER's current ACP session id, or nil before one exists."
   (map-nested-elt (agent-shell-side-compat--state shell-buffer) '(:session :id)))
 
+(defun agent-shell-side-compat-resumed-p (shell-buffer)
+  "Return non-nil when SHELL-BUFFER was started by resuming a session id.
+
+Such a shell starts with an empty buffer while the session behind it
+already holds a transcript, so an empty buffer does not mean an
+unforkable session."
+  (and (map-elt (agent-shell-side-compat--state shell-buffer)
+                :resume-session-id)
+       t))
+
 (defun agent-shell-side-compat-client (shell-buffer)
   "Return SHELL-BUFFER's ACP client, or nil when it has none yet."
   (map-elt (agent-shell-side-compat--state shell-buffer) :client))
