@@ -320,10 +320,17 @@ and what runs either side of it.
    The second attempt keyed off `session-restored`, which was wrong in
    the opposite direction. That event does not mean "the session came
    back"; it means a buffered transcript was replayed, and the buffering
-   only happens when `agent-shell-transcript-verbosity` asks for one
-   (`agent-shell.el:8668`, guarded by `--has-pending-restore-p`). The
-   default is `minimal`, so on a stock setup it never fires at all and
-   the record would never be dropped. Worse than the original bug: the
+   only happens when `agent-shell-session-restore-verbosity` asks for one
+   (`agent-shell.el:8789`, guarded by `--has-pending-restore-p`).
+
+   Its default is `minimal`, which for this package's primary agent means
+   nothing is ever buffered and the event never fires. Note the condition
+   rather than just the default, because it is narrower than it looks:
+   `agent-shell--effective-restore-verbosity` (`agent-shell.el:8566`)
+   promotes `minimal` to `first-last` for an agent that can load a session
+   but not resume one, and `session-restored` does fire for those.
+   claude-agent-acp advertises `resume`, so it is in the group where the
+   event never arrives. Worse than the original bug: the
    next resume would offer a session already deleted, and agent-shell
    answers a rejected load by quietly loading a different one, which this
    package would then mark as the side conversation. The user would

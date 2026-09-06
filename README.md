@@ -157,9 +157,11 @@ conversation.
 A resumed side conversation is a side conversation again, with the same keys,
 lighter, and place in `agent-shell-side-list`, but it stands on its own: nothing
 records which buffer its parent was, so there is nothing to toggle to or hand
-findings back to. Resuming consumes the record, so a session is never offered
-twice, nor after it has been deleted. Close the resumed one with `keep` and it
-is recorded afresh.
+findings back to. Close the resumed one with `keep` and it is recorded afresh.
+
+The record is consumed once the session actually comes back, so one that resumes
+is not offered twice. One that does not is kept: if the agent rejects the load,
+the record stays so you can try again.
 
 With `agent-shell-prefer-viewport-interaction` set, or when started from a
 viewport buffer, the side conversation opens through a viewport as

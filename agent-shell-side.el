@@ -1124,8 +1124,12 @@ of them when this buffer has no session of its own.
 The reopened buffer is a side conversation again, with the same keys and
 lighter, but stands on its own: nothing records which buffer its parent
 was, so there is nothing to toggle to or hand findings back to.  Closing
-it with `keep' records it afresh.  The record it came from is consumed,
-so a session is never offered twice, nor after it has been deleted."
+it with `keep' records it afresh.
+
+The record it came from is consumed once the session really comes back,
+so a session that resumes is not offered twice.  One that does not is
+kept on the list: a load the agent rejects leaves the record alone, so
+the conversation can be tried again once whatever refused it is fixed."
   (interactive)
   (let* ((shell-buffer (agent-shell-shell-buffer :no-error t :no-create t))
          (session-id (and shell-buffer
@@ -1171,8 +1175,10 @@ worth keeping.  `session-selected' is emitted before the load request is
 even sent, so it is exactly as early as not waiting at all.
 `session-restored' sounds right and is not: it means a buffered
 transcript was replayed, which only happens when
-`agent-shell-transcript-verbosity' asks for one, so on the default
-setting it never fires and the record would never be dropped.
+`agent-shell-session-restore-verbosity' asks for one.  On its default of
+`minimal', against an agent that can resume rather than only load, no
+transcript is buffered, nothing is replayed, and the event never fires at
+all -- so the record would never be dropped.
 
 `prompt-ready' is the one that holds.  It is emitted once the init
 pipeline finishes, on every path -- a load that worked, a load that
