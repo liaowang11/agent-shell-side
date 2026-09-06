@@ -1,6 +1,6 @@
 # Design: open work for agent-shell-side
 
-Status as of 2026-09-06. `make check` is green (99 ERT tests against stubs)
+Status as of 2026-09-06. `make check` is green (104 ERT tests against stubs)
 and `make live-check` passes 10 of 10 against a real claude-agent-acp 0.70.
 
 Four questions were open when this was written. This document records the
@@ -349,6 +349,73 @@ and what runs either side of it.
    package's own session-id cache, which only the fork path ever fills; a
    resumed shell reads its id from agent-shell's state. The test was
    passing against a source the real path never uses.
+
+## 7. Where it is shown, and one handback path
+
+Two changes from using the thing, 2026-09-06.
+
+### Beside the parent, not instead of it
+
+The package had no display option of its own: it reused
+`agent-shell-display-action`, whose default is
+`display-buffer-same-window`, so a side conversation took over the
+parent's window and toggling swapped them. That is Codex's behaviour
+because a terminal has one pane. Emacs does not, and the whole appeal of
+a side conversation is reading it next to what it forked from.
+
+`agent-shell-side-display-action` now defaults to a window on the right.
+Kept separate from `agent-shell-display-action` deliberately: pointing
+that one at a side window would move every shell, not just these.
+
+Three things had to move with it, all found by pointing a side-window
+action at the old code rather than by reading it:
+
+- **Closing put the parent into the side window.** The close path handed
+  the side's window to the parent, giving `((PARENT right) (PARENT nil))`
+  -- the parent displayed twice, once in a strip meant for something
+  else. A side window is scenery for what it holds, so it is now deleted
+  with the conversation.
+- **Toggling duplicated the side.** With both visible it gave
+  `((SIDE nil) (SIDE right))`, the parent nowhere. Toggle now selects the
+  other window when both are on screen. When they are not, it displays
+  through the action, which reproduces the old swap exactly when that
+  action is `display-buffer-same-window` -- so the old behaviour is still
+  one setting away and needs no special case.
+- **`delete-other-windows` signals** while a side window is selected
+  ("Cannot make side window the only window"). That is why the test
+  helper deletes side windows before calling it.
+
+The parent is displayed through `agent-shell-display-action`, not the
+side action. It is an ordinary shell.
+
+Under viewport interaction the action is not consulted at all. The
+viewport owns its layout, and a compose buffer wedged into a side window
+is not an improvement.
+
+### One handback path
+
+The handback had two shapes. Under viewport interaction the findings went
+straight into the parent's compose buffer, which takes text mid-turn.
+Otherwise they went to the shell prompt, which does not, so a busy parent
+meant holding the findings, a pending flag, a mode-line marker, a
+deferred re-check to work around `error` arriving before the busy flag
+clears, and the side conversation closing itself at whatever moment the
+parent's turn happened to end.
+
+All of that is gone. The findings always go to a compose buffer.
+
+The argument for it is not just that it is less code. That setting
+decides where the *user's own prompts* go; it has no business deciding
+what happens to findings, and letting it do so gave the two settings
+visibly different commands for the same task. The compose buffer is also
+strictly better than waiting: it takes the text immediately, mid-turn,
+and hands back the three answers that matter from its own keys -- send,
+queue behind the running turn, or steer into it. Waiting could only ever
+offer the first, and only later.
+
+Removed with it: `agent-shell-side-handback-submit`, which had become a
+setting that could not do anything, since sending is now the compose
+buffer's business rather than ours.
 
 ## Order of work
 

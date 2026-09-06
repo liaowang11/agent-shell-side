@@ -30,7 +30,7 @@ one.
 | Command | Key (in linked buffers) | What it does |
 | --- | --- | --- |
 | `agent-shell-side` | | Fork this conversation into a side one and switch to it |
-| `agent-shell-side-toggle` | `C-c C-b` | Switch between the side conversation and its parent |
+| `agent-shell-side-toggle` | `C-c C-b` | Move between the side conversation and its parent |
 | `agent-shell-side-conclude` | `C-c C-q` | Summarise the side conversation into the parent, then close it |
 | `agent-shell-side-dismiss` | `C-c C-k` | Close the side conversation, discarding what it learned |
 | `agent-shell-side-resume` | | Reopen a side conversation that was kept |
@@ -47,19 +47,21 @@ An empty question opens it blank.
 ### Carrying findings back
 
 `agent-shell-side-conclude` (`C-c C-q`) asks the side conversation for a summary
-addressed to the parent, waits for it, puts it at the parent's prompt, and closes
-the side conversation. The summary is left for you to review rather than sent.
-Set `agent-shell-side-handback-submit` to send it instead.
+addressed to the parent, waits for it, seeds it into a compose buffer for the
+parent, and closes the side conversation.
 
-Where the summary lands follows how you use `agent-shell`. With
-`agent-shell-prefer-viewport-interaction` it is appended to the parent's viewport
-compose buffer, opened in edit mode so this works while the parent is mid-turn;
-the compose buffer's own keys then send, queue, or steer it. Otherwise it goes
-to the parent's shell prompt: at once when the parent is idle, or as soon as its
-turn ends when it is not. A busy shell cannot take text at its prompt, since
-shell-maker appends output at the end of the buffer and would swallow it. The
-side conversation stays open until the findings are staged, so a parent that is
-killed first loses nothing, and its mode line says the findings are waiting.
+The summary is never sent for you. It arrives as a draft you can edit, and the
+compose buffer's own keys decide what happens to it: `C-c C-c` sends, `C-c C-q`
+queues it behind the parent's running turn, `C-c C-i` steers it into that turn,
+and `C-c C-k` throws it away. That is the same set of choices you have for any
+prompt, which is the point.
+
+This is one path, not two. It does not depend on
+`agent-shell-prefer-viewport-interaction`: that setting decides where your own
+prompts go and has no business deciding what happens to findings. A compose
+buffer is also the only surface that works while the parent is mid-turn, since a
+busy shell cannot take text at its prompt. shell-maker appends output at the end
+of the buffer and would swallow it.
 
 If the summary comes back empty, or the parent is gone, the side conversation is
 left open rather than closed on nothing. Customize
@@ -70,6 +72,28 @@ finishes, fails, or asks for approval, the side conversation's mode line says so
 (` Side:main needs approval`) and, while the side conversation is on screen,
 echoes it once. Set `agent-shell-side-report-parent-status` to nil for the mode
 line only.
+
+### Where it opens
+
+A side conversation runs beside the conversation it was forked from, so it opens
+in a window of its own on the right and the parent stays visible. That is the
+arrangement a terminal cannot offer, and the reason `agent-shell-side-display-action`
+exists separately from `agent-shell-display-action`, which is left to decide
+where ordinary shells go.
+
+`agent-shell-side-toggle` (`C-c C-b`) then moves point between the two windows
+rather than rearranging them. Closing the side conversation deletes its window.
+
+To get the old behaviour, where the side conversation takes over the parent's
+window and toggling swaps the two, set it to same-window:
+
+```elisp
+(setq agent-shell-side-display-action '(display-buffer-same-window))
+```
+
+Everything follows from the action: toggling still selects the other window when
+both happen to be visible, and falls back to displaying through the action when
+they are not.
 
 ### Keeping track of what is open
 
@@ -165,8 +189,8 @@ the record stays so you can try again.
 
 With `agent-shell-prefer-viewport-interaction` set, or when started from a
 viewport buffer, the side conversation opens through a viewport as
-`agent-shell-fork` would, and the handback goes to the parent's own compose
-buffer rather than its shell prompt.
+`agent-shell-fork` would, and `agent-shell-side-display-action` is not consulted:
+the viewport owns its own layout.
 
 The keys above are deliberately *not* bound in a viewport compose buffer.
 `agent-shell-viewport-edit-mode` already uses `C-c C-k` to discard the draft and

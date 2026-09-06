@@ -132,6 +132,32 @@ every close is friction on the common path.
                  (const :tag "Ask each time" ask))
   :group 'agent-shell-side)
 
+(defcustom agent-shell-side-display-action
+  '((display-buffer-in-side-window)
+    (side . right)
+    (window-width . 0.4))
+  "Display action for a side conversation's own buffer.
+
+Separate from `agent-shell-display-action', which decides where ordinary
+shells go and is left alone: a side conversation is a different thing on
+screen.  It runs beside the conversation it was forked from, so the
+default puts it in a window on the right and keeps the parent visible.
+That is the arrangement a terminal cannot offer -- Codex has one pane and
+must swap -- and the reason to have this option at all.
+
+To get the old behaviour, where the side conversation takes over the
+parent's window and `agent-shell-side-toggle' swaps the two, set this to
+\='(display-buffer-same-window).  Everything else follows: toggling
+selects the other window when both are visible and falls back to
+displaying through this action when they are not.
+
+Ignored under `agent-shell-prefer-viewport-interaction', and when the
+command was issued from a viewport buffer.  The viewport owns its own
+layout, and a compose buffer wedged into a side window is not an
+improvement.  See `display-buffer' for the format."
+  :type '(cons (repeat function) alist)
+  :group 'agent-shell-side)
+
 (defcustom agent-shell-side-buffer-name-suffix " [side]"
   "Appended to the agent's buffer and mode-line names in a side conversation."
   :type 'string
@@ -156,16 +182,6 @@ Its answer is what gets handed back to the parent conversation."
   "Findings from a side conversation:"
   "Line introducing handed-back findings in the parent conversation."
   :type 'string
-  :group 'agent-shell-side)
-
-(defcustom agent-shell-side-handback-submit nil
-  "Whether handed-back findings are sent in the parent, or left to review.
-
-When nil, the findings are inserted at the parent's prompt and left
-there for you to send, queue, or steer.  Only read when the parent is
-shown as a plain shell: the viewport compose buffer has no way to submit
-on insertion, and leaves sending to its own keys."
-  :type 'boolean
   :group 'agent-shell-side)
 
 (defcustom agent-shell-side-handback-timeout 180
@@ -214,9 +230,6 @@ One of `needs-approval', `finished', `failed', `closed', or nil.")
 
 (defvar-local agent-shell-side--session-id-cache nil
   "Session id captured from the `session-selected' event, when it arrived.")
-
-(defvar-local agent-shell-side--handback-pending nil
-  "In a side conversation, non-nil while findings wait for the parent's turn.")
 
 (defun agent-shell-side--live-buffer (buffer)
   "Return BUFFER when it is still live, else nil."
@@ -566,20 +579,14 @@ to use, so this stays safe to call from a mode-line lighter."
                   shell)))
       (current-buffer)))
 
-(defun agent-shell-side--lighter-string (role status &optional pending)
+(defun agent-shell-side--lighter-string (role status)
   "Return the mode-line lighter for ROLE with parent STATUS.
 
-ROLE is `side' in a side conversation, `parent' in a shell that has one.
-PENDING, in a side conversation, means findings are waiting for the
-parent's turn to end.  It outranks STATUS: a parent that is mid-turn is
-why the findings are waiting, so saying both would say the same thing
-twice."
+ROLE is `side' in a side conversation, `parent' in a shell that has one."
   (pcase role
-    ('side (cond
-            (pending " Side:findings waiting")
-            ((agent-shell-side--status-label status)
-             (concat " Side:" (agent-shell-side--status-label status)))
-            (t " Side")))
+    ('side (if-let* ((label (agent-shell-side--status-label status)))
+               (concat " Side:" label)
+             " Side"))
     (_ " Side↩")))
 
 (defun agent-shell-side--lighter ()
@@ -587,8 +594,7 @@ twice."
   (let ((shell (agent-shell-side--this-shell)))
     (agent-shell-side--lighter-string
      (if (agent-shell-side-buffer-p shell) 'side 'parent)
-     (buffer-local-value 'agent-shell-side--parent-status shell)
-     (buffer-local-value 'agent-shell-side--handback-pending shell))))
+     (buffer-local-value 'agent-shell-side--parent-status shell))))
 
 (defvar-keymap agent-shell-side-mode-map
   :doc "Keymap for `agent-shell-side-mode'."
@@ -796,15 +802,33 @@ before asking the user for anything."
                   (or (map-elt parent-config :mode-line-name) "This agent")))
     parent-buffer))
 
+(defun agent-shell-side--side-window-p (window)
+  "Return non-nil when WINDOW is one of the frame's side windows.
+
+Such a window is scenery for what it holds rather than a place to put
+things: it cannot be made the only window, and handing it a different
+buffer leaves that buffer stuck in a narrow strip."
+  (and (window-live-p window)
+       (window-parameter window 'window-side)))
+
 (defun agent-shell-side--display (buffer &optional viewport)
-  "Show BUFFER the way `agent-shell' shows its own buffers.
+  "Show side conversation BUFFER, honoring `agent-shell-side-display-action'.
 
 With VIEWPORT, or when the user prefers viewport interaction, the buffer
-is shown through a viewport as `agent-shell-fork' would show it.
-Otherwise it honors `agent-shell-display-action' rather than picking a
-window directly, so a side conversation lands where the user already
-told `agent-shell' to put shells."
+is shown through a viewport as `agent-shell-fork' would show it, and the
+action is not consulted."
   (if (or viewport (agent-shell-side-compat-prefer-viewport-p))
+      (agent-shell-side-compat-show-in-viewport buffer)
+    (when-let* ((window (display-buffer buffer agent-shell-side-display-action)))
+      (select-window window))))
+
+(defun agent-shell-side--display-parent (buffer)
+  "Show parent shell BUFFER where `agent-shell' puts its own buffers.
+
+Deliberately not `agent-shell-side-display-action': the parent is an
+ordinary shell, and the default side action would file it away in the
+strip meant for the side conversation."
+  (if (agent-shell-side-compat-prefer-viewport-p)
       (agent-shell-side-compat-show-in-viewport buffer)
     (when-let* ((window (display-buffer buffer agent-shell-display-action)))
       (select-window window))))
@@ -857,12 +881,17 @@ cannot be forked costs no typing."
                       (buffer-local-value 'agent-shell-side--side-buffer shell)))))
     (unless target
       (user-error "No side conversation linked to this buffer"))
-    ;; Swap in place when this buffer has a window: toggling is "show the
-    ;; other end here", not "find somewhere for it".
-    (if-let* ((window (get-buffer-window (current-buffer))))
-        (progn (set-window-buffer window target)
-               (select-window window))
-      (agent-shell-side--display target))))
+    ;; Already on screen: toggling is "look at the other end", so move
+    ;; point rather than rearranging windows.  This is the normal case
+    ;; under the default side-window layout, where both are visible.
+    (if-let* ((window (get-buffer-window target)))
+        (select-window window)
+      ;; Otherwise put it where its kind belongs.  With the action set to
+      ;; `display-buffer-same-window' this reproduces the old swap, since
+      ;; displaying in the selected window is what a swap was.
+      (if (agent-shell-side-buffer-p target)
+          (agent-shell-side--display target)
+        (agent-shell-side--display-parent target)))))
 
 (defun agent-shell-side--resolve-side ()
   "Return the side conversation this buffer is one end of.
@@ -895,11 +924,19 @@ mode and strands the findings there unsendable."
                    (when (buffer-live-p side-buffer)
                      (let ((window (get-buffer-window side-buffer)))
                        (kill-buffer side-buffer)
-                       (when (and parent (not parent-shown) (window-live-p window))
-                         (set-window-buffer window parent))))
+                       (cond
+                        ((not (window-live-p window)) nil)
+                        ;; A side window belongs to the side conversation, so
+                        ;; it goes when that does.  Handing it to the parent
+                        ;; instead would leave the parent showing twice, once
+                        ;; in a strip it was never meant to occupy.
+                        ((agent-shell-side--side-window-p window)
+                         (ignore-errors (delete-window window)))
+                        ((and parent (not parent-shown))
+                         (set-window-buffer window parent)))))
                    (when (and parent (not parent-shown)
                               (not (get-buffer-window parent)))
-                     (agent-shell-side--display parent)))))
+                     (agent-shell-side--display-parent parent)))))
     (with-current-buffer side-buffer
       (when (memq (agent-shell-status) '(busy blocked))
         (agent-shell-interrupt t)))
@@ -931,108 +968,38 @@ conversation instead, use `agent-shell-side-conclude'."
   "Return SUMMARY framed for the parent conversation."
   (format "%s\n\n%s" agent-shell-side-handback-header (string-trim summary)))
 
-(defun agent-shell-side--parent-busy-p (parent-buffer)
-  "Return non-nil when PARENT-BUFFER is running a turn or waiting on one."
-  (memq (agent-shell-status :shell-buffer parent-buffer) '(busy blocked)))
+(defun agent-shell-side--deliver-handback (parent-buffer text)
+  "Seed TEXT into a compose buffer for PARENT-BUFFER, for the user to send.
 
-(defun agent-shell-side--stage-in-shell (parent-buffer text)
-  "Put TEXT at PARENT-BUFFER's prompt, sent only if the user asked for that."
-  (agent-shell-insert :text text
-                      :submit agent-shell-side-handback-submit
-                      :no-focus t
-                      :shell-buffer parent-buffer))
+Always a compose buffer, whatever `agent-shell-prefer-viewport-interaction'
+says.  That setting decides where the user's own prompts go; it has no
+business deciding what happens to findings, and letting it do so gave the
+two settings visibly different commands.
 
-(defun agent-shell-side--stage-when-idle (side-buffer parent-buffer text on-staged)
-  "Put TEXT at PARENT-BUFFER's prompt once its turn ends, then call ON-STAGED.
+A compose buffer is also the only surface that works here.  A busy shell
+cannot take text at its prompt -- `shell-maker' appends output at the end
+of the buffer and would swallow it -- so the alternative was to hold the
+findings until the turn ended, which meant waiting on a turn that might
+be long, a pending state to track, and the side conversation closing
+itself at whatever moment that turn happened to finish.  The compose
+buffer takes the text immediately and mid-turn, and hands the user the
+three answers that matter, from its own keys: send, queue behind the
+running turn, or steer into it.  None of them is ours to choose.
 
-A busy shell cannot take text at its prompt: `shell-maker' appends
-output at the end of the buffer, so anything staged there would be
-swallowed by the streaming response.  The prompt is printed, and busy
-cleared, before `turn-complete' is emitted, so the first event that finds
-the parent idle is the moment to insert.
-
-SIDE-BUFFER stays open meanwhile, marked as having findings pending, so
-the summary cannot be lost to a parent that is killed first.  That case
-is reported and leaves the side conversation as it was.
-
-A turn that fails rather than finishing needs one extra step.  `error'
-is emitted before the shell clears its busy state, and nothing is
-emitted afterwards, so a handler that only tests for an idle parent
-would wait for an event that never comes.  The clearing happens in the
-same call, right after the event is dispatched, so the test is deferred
-to the next timer tick rather than run inline."
-  (let ((token nil)
-        (settled nil)
-        (stage nil))
-    (with-current-buffer side-buffer
-      (setq agent-shell-side--handback-pending t)
-      (force-mode-line-update))
-    (setq stage
-          (lambda ()
-            (unless (or settled (agent-shell-side--parent-busy-p parent-buffer))
-              (setq settled t)
-              (agent-shell-side--unsubscribe parent-buffer token)
-              (when (buffer-live-p side-buffer)
-                (with-current-buffer side-buffer
-                  (setq agent-shell-side--handback-pending nil)
-                  (force-mode-line-update)))
-              (agent-shell-side--stage-in-shell parent-buffer text)
-              (funcall on-staged))))
-    (setq token
-          (agent-shell-subscribe-to
-           :shell-buffer parent-buffer
-           :on-event
-           (lambda (event)
-             (unless settled
-               (pcase (map-elt event :event)
-                 ('clean-up
-                  (setq settled t)
-                  (when (buffer-live-p side-buffer)
-                    (with-current-buffer side-buffer
-                      (setq agent-shell-side--handback-pending nil)
-                      (force-mode-line-update)))
-                  (message
-                   "agent-shell-side: the parent closed before taking the findings; leaving the side conversation open"))
-                 ('error (run-at-time 0 nil stage))
-                 (_ (funcall stage)))))))
-    (message "Side conversation: %s is mid-turn; findings will be staged at its prompt when the turn ends"
-             (buffer-name parent-buffer))
-    token))
-
-(defun agent-shell-side--deliver-handback (side-buffer parent-buffer text on-delivered)
-  "Get TEXT to PARENT-BUFFER for the user to send, then call ON-DELIVERED.
-
-SIDE-BUFFER is the side conversation the findings came from; it is kept
-open, and marked, while they wait for a busy parent.
-
-Where it lands follows how the user works with `agent-shell'.  With
-`agent-shell-prefer-viewport-interaction', it is appended to the
-parent's viewport compose buffer, opened in edit mode so this works
-while the parent is mid-turn; the compose buffer's own keys then send,
-queue, or steer it.  Otherwise it goes to the parent's shell prompt: at
-once when the parent is idle, or as soon as its turn ends when it is
-not.  Nothing here sends on the user's behalf unless
-`agent-shell-side-handback-submit' asks for it.
-
-Never the minibuffer: findings are usually long, and a minibuffer is no
-place to review them."
-  (cond
-   ((agent-shell-side-compat-prefer-viewport-p)
-    (agent-shell-side-compat-compose-in-viewport parent-buffer text)
-    (funcall on-delivered t))
-   ((agent-shell-side--parent-busy-p parent-buffer)
-    (agent-shell-side--stage-when-idle
-     side-buffer parent-buffer text (lambda () (funcall on-delivered nil))))
-   (t
-    (agent-shell-side--stage-in-shell parent-buffer text)
-    (funcall on-delivered nil))))
+Opened with `:edit t' so it is ready to type in even while the parent is
+working.  Never the minibuffer: findings are usually long, and a
+minibuffer is no place to review them."
+  (agent-shell-side-compat-compose-in-viewport parent-buffer text))
 
 (defun agent-shell-side--finish-handback (side-buffer parent-buffer summary)
   "Put SUMMARY into PARENT-BUFFER and close SIDE-BUFFER once it is there.
 
 An empty summary or a parent that has since gone away leaves the side
 conversation open: closing it would throw the conversation away and hand
-the parent nothing."
+the parent nothing.  Otherwise the side conversation closes as soon as
+the draft exists -- the findings are out of it and in a buffer of their
+own by then, and what to do with them is no longer this command's
+business."
   (let ((summary (string-trim (or summary ""))))
     (cond
      ((string-empty-p summary)
@@ -1043,10 +1010,10 @@ the parent nothing."
        "agent-shell-side: the parent is gone; leaving the side conversation open"))
      (t
       (agent-shell-side--deliver-handback
-       side-buffer parent-buffer (agent-shell-side--handback-text summary)
-       (lambda (parent-shown)
-         (when (buffer-live-p side-buffer)
-           (agent-shell-side--close side-buffer parent-shown))))))))
+       parent-buffer (agent-shell-side--handback-text summary))
+      ;; The parent's compose buffer is now in front of the user, so
+      ;; closing must not display the parent shell over it.
+      (agent-shell-side--close side-buffer t)))))
 
 (defun agent-shell-side--collect-summary (side-buffer parent-buffer)
   "Gather SIDE-BUFFER's next answer and hand it to PARENT-BUFFER.
@@ -1090,11 +1057,13 @@ arrives first would otherwise be lost from the summary."
   "Summarise the side conversation into the parent, then close it.
 
 Asks the side conversation for a summary addressed to the parent, waits
-for it, puts it at the parent's prompt, and closes the side conversation
-the way `agent-shell-side-dismiss' would.
+for it, seeds it into a compose buffer for the parent, and closes the
+side conversation the way `agent-shell-side-dismiss' would.
 
-The summary is left for review rather than sent, unless
-`agent-shell-side-handback-submit' says otherwise."
+The summary is never sent for you.  It arrives as a draft you can edit,
+and the compose buffer's own keys decide what happens to it: send,
+queue behind the parent's running turn, or steer into it.  This works
+whether or not the parent is mid-turn."
   (interactive)
   (let* ((side-buffer (agent-shell-side--resolve-side))
          (parent-buffer (agent-shell-side--live-buffer
@@ -1104,9 +1073,6 @@ The summary is left for review rather than sent, unless
       (user-error "This side conversation has no parent left to report to"))
     (when (memq (agent-shell-status :shell-buffer side-buffer) '(busy blocked))
       (user-error "The side conversation is still working; wait for it to finish"))
-    (when (buffer-local-value 'agent-shell-side--handback-pending side-buffer)
-      (user-error "Findings are already waiting for %s to finish its turn"
-                  (buffer-name parent-buffer)))
     (agent-shell-side--collect-summary side-buffer parent-buffer)
     (agent-shell-insert :text agent-shell-side-handback-prompt
                         :submit t
