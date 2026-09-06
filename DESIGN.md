@@ -1,6 +1,6 @@
 # Design: open work for agent-shell-side
 
-Status as of 2026-09-06. `make check` is green (92 ERT tests against stubs)
+Status as of 2026-09-06. `make check` is green (99 ERT tests against stubs)
 and `make live-check` passes 10 of 10 against a real claude-agent-acp 0.70.
 
 Four questions were open when this was written. This document records the
@@ -234,6 +234,56 @@ a busy target as the real one does, which is what had hidden item 1.
 Deferred, deliberately: a fork-at-point variant (`agent-shell-fork-at-point`
 exists upstream) and a `/btw`-style no-tools single-turn question. Both are
 new features, not fixes.
+
+## 6. Review of PR #1, 2026-09-06
+
+The review of the section 5 work found five defects, three of them
+introduced by that work and two in the paths it touched. All are fixed
+on the same branch.
+
+1. **Closing the side made the viewport handback unsendable.** The close
+   path re-displays the parent when it has no window, which under
+   viewport interaction is the normal state. That re-entered
+   `agent-shell-viewport--show-buffer` with nothing to append, taking the
+   branch that flips the compose buffer to read-only view mode. The
+   findings landed and were immediately stranded. The draft is not
+   snapshotted on that transition; the only snapshot write in that file
+   guards history-ring navigation. Fix: `--close` takes a `parent-shown`
+   argument, set by the handback when delivery already put the parent in
+   front of the user.
+
+   The first test for this passed against the unfixed code twice over:
+   once because the parent still owned a window in the test, and once
+   because the shared conclude helper stubbed `--display` out entirely.
+   Both are now explicit in the test.
+
+2. **The side keys were unreachable from a viewport.** The mode was
+   enabled on the shell buffer only, and viewport users sit in the
+   viewport buffer. Fix: `--this-shell` resolves a viewport buffer to its
+   shell, and every command, plus the lighter, reads through it. The mode
+   is also mirrored onto the viewport buffer so the keys bind there.
+   Resolution is deliberately narrow rather than a call to
+   `agent-shell-shell-buffer`, which can fall back to asking the user
+   which shell to use; the lighter runs on redisplay, where a prompt
+   would be intolerable.
+
+3. **An errored parent turn stranded the findings forever.** `error` is
+   emitted before the shell clears its busy state, which upstream states
+   in a comment at `agent-shell.el:7442`, and nothing follows it. The
+   idle test therefore never fired and `conclude` refused from then on.
+   Fix: on `error`, defer the test to the next timer tick, since the
+   clearing happens in the same call right after the event is dispatched.
+
+4. **The README described a mode-line marker that did not exist.** The
+   pending flag was read only by the `conclude` guard. Fixed by building
+   it: the lighter now reads " Side:findings waiting", and pending
+   outranks parent status, which would otherwise say the same thing twice.
+
+5. **Resume dropped the record before the session was known to load.**
+   `session/load` is still in flight at that point, so an agent that
+   rejected it left a shell talking to nothing and no record to retry
+   from. Fix: the record is dropped on `session-selected` and kept on
+   `error`.
 
 ## Order of work
 

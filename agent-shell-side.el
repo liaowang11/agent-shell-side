@@ -534,21 +534,44 @@ selected, an error is an ordinary failed request and the shell keeps it."
 
 ;;; Minor mode
 
-(defun agent-shell-side--lighter-string (role status)
+(defun agent-shell-side--this-shell ()
+  "Return the shell buffer this buffer speaks for.
+
+A viewport buffer stands for the shell behind it, so a command or lighter
+run there acts on that shell rather than on the viewport.  Resolution is
+deliberately narrow: only a viewport is looked up, and only through its
+own shell.  `agent-shell-shell-buffer' can otherwise fall back to asking
+the user which shell to use, and this runs from a mode-line lighter,
+where a prompt would be intolerable."
+  (or (and (agent-shell-side-compat-viewport-buffer-p)
+           (ignore-errors
+             (agent-shell-shell-buffer :viewport-buffer (current-buffer)
+                                       :no-error t :no-create t)))
+      (current-buffer)))
+
+(defun agent-shell-side--lighter-string (role status &optional pending)
   "Return the mode-line lighter for ROLE with parent STATUS.
 
-ROLE is `side' in a side conversation, `parent' in a shell that has one."
+ROLE is `side' in a side conversation, `parent' in a shell that has one.
+PENDING, in a side conversation, means findings are waiting for the
+parent's turn to end.  It outranks STATUS: a parent that is mid-turn is
+why the findings are waiting, so saying both would say the same thing
+twice."
   (pcase role
-    ('side (if-let* ((label (agent-shell-side--status-label status)))
-               (concat " Side:" label)
-             " Side"))
+    ('side (cond
+            (pending " Side:findings waiting")
+            ((agent-shell-side--status-label status)
+             (concat " Side:" (agent-shell-side--status-label status)))
+            (t " Side")))
     (_ " Side↩")))
 
 (defun agent-shell-side--lighter ()
   "Return the mode-line lighter for the current buffer."
-  (agent-shell-side--lighter-string
-   (if (agent-shell-side-buffer-p) 'side 'parent)
-   agent-shell-side--parent-status))
+  (let ((shell (agent-shell-side--this-shell)))
+    (agent-shell-side--lighter-string
+     (if (agent-shell-side-buffer-p shell) 'side 'parent)
+     (buffer-local-value 'agent-shell-side--parent-status shell)
+     (buffer-local-value 'agent-shell-side--handback-pending shell))))
 
 (defvar-keymap agent-shell-side-mode-map
   :doc "Keymap for `agent-shell-side-mode'."
@@ -732,6 +755,19 @@ one works."
       (with-current-buffer shell-buffer
         (and (ignore-errors (shell-maker-history)) t))))
 
+(defun agent-shell-side--mirror-mode-to-viewport (shell-buffer)
+  "Turn `agent-shell-side-mode' on in SHELL-BUFFER's viewport buffer.
+
+The mode carries the keys, and under viewport interaction the user sits
+in the viewport buffer rather than the shell, so binding them only on
+the shell would put them out of reach.  Everything the mode reads is
+resolved through `agent-shell-side--this-shell', so the lighter and the
+commands report the shell's state from either buffer."
+  (when (buffer-local-value 'agent-shell-side-mode shell-buffer)
+    (when-let* ((viewport (agent-shell-side-compat-existing-viewport shell-buffer)))
+      (with-current-buffer viewport
+        (agent-shell-side-mode 1)))))
+
 (defun agent-shell-side--forkable-parent ()
   "Return the shell buffer a side conversation can be forked from now.
 
@@ -759,7 +795,9 @@ Otherwise it honors `agent-shell-display-action' rather than picking a
 window directly, so a side conversation lands where the user already
 told `agent-shell' to put shells."
   (if (or viewport (agent-shell-side-compat-prefer-viewport-p))
-      (agent-shell-side-compat-show-in-viewport buffer)
+      (progn
+        (agent-shell-side-compat-show-in-viewport buffer)
+        (agent-shell-side--mirror-mode-to-viewport buffer))
     (when-let* ((window (display-buffer buffer agent-shell-display-action)))
       (select-window window))))
 
@@ -804,8 +842,11 @@ cannot be forked costs no typing."
 (defun agent-shell-side-toggle ()
   "Switch between a side conversation and the shell it was forked from."
   (interactive)
-  (let ((target (or (agent-shell-side--live-buffer agent-shell-side--parent-buffer)
-                    (agent-shell-side--live-buffer agent-shell-side--side-buffer))))
+  (let* ((shell (agent-shell-side--this-shell))
+         (target (or (agent-shell-side--live-buffer
+                      (buffer-local-value 'agent-shell-side--parent-buffer shell))
+                     (agent-shell-side--live-buffer
+                      (buffer-local-value 'agent-shell-side--side-buffer shell)))))
     (unless target
       (user-error "No side conversation linked to this buffer"))
     ;; Swap in place when this buffer has a window: toggling is "show the
@@ -819,15 +860,25 @@ cannot be forked costs no typing."
   "Return the side conversation this buffer is one end of.
 
 Works from the side conversation and from its parent, so the same keys
-serve both."
-  (or (and (agent-shell-side-buffer-p) (current-buffer))
-      (agent-shell-side--live-buffer agent-shell-side--side-buffer)
-      (user-error "No side conversation linked to this buffer")))
+serve both, and from either one's viewport buffer, which is where a
+viewport user actually is."
+  (let ((shell (agent-shell-side--this-shell)))
+    (or (and (agent-shell-side-buffer-p shell) shell)
+        (agent-shell-side--live-buffer
+         (buffer-local-value 'agent-shell-side--side-buffer shell))
+        (user-error "No side conversation linked to this buffer"))))
 
-(defun agent-shell-side--close (side-buffer)
+(defun agent-shell-side--close (side-buffer &optional parent-shown)
   "Interrupt, dispose of, and close SIDE-BUFFER, restoring its parent.
 
-Disposal follows `agent-shell-side-on-dismiss'."
+Disposal follows `agent-shell-side-on-dismiss'.
+
+PARENT-SHOWN means the caller has already put the parent in front of the
+user, so this must not show it again.  The handback sets it: under
+viewport interaction the findings go into the parent's compose buffer,
+and re-displaying the parent shell would re-enter the viewport with
+nothing to append, which flips that compose buffer to read-only view
+mode and strands the findings there unsendable."
   (let* ((parent (agent-shell-side--live-buffer
                   (buffer-local-value 'agent-shell-side--parent-buffer
                                       side-buffer)))
@@ -836,9 +887,10 @@ Disposal follows `agent-shell-side-on-dismiss'."
                    (when (buffer-live-p side-buffer)
                      (let ((window (get-buffer-window side-buffer)))
                        (kill-buffer side-buffer)
-                       (when (and parent (window-live-p window))
+                       (when (and parent (not parent-shown) (window-live-p window))
                          (set-window-buffer window parent))))
-                   (when (and parent (not (get-buffer-window parent)))
+                   (when (and parent (not parent-shown)
+                              (not (get-buffer-window parent)))
                      (agent-shell-side--display parent)))))
     (with-current-buffer side-buffer
       (when (memq (agent-shell-status) '(busy blocked))
@@ -893,33 +945,48 @@ the parent idle is the moment to insert.
 
 SIDE-BUFFER stays open meanwhile, marked as having findings pending, so
 the summary cannot be lost to a parent that is killed first.  That case
-is reported and leaves the side conversation as it was."
+is reported and leaves the side conversation as it was.
+
+A turn that fails rather than finishing needs one extra step.  `error'
+is emitted before the shell clears its busy state, and nothing is
+emitted afterwards, so a handler that only tests for an idle parent
+would wait for an event that never comes.  The clearing happens in the
+same call, right after the event is dispatched, so the test is deferred
+to the next timer tick rather than run inline."
   (let ((token nil)
-        (settled nil))
+        (settled nil)
+        (stage nil))
     (with-current-buffer side-buffer
-      (setq agent-shell-side--handback-pending t))
+      (setq agent-shell-side--handback-pending t)
+      (force-mode-line-update))
+    (setq stage
+          (lambda ()
+            (unless (or settled (agent-shell-side--parent-busy-p parent-buffer))
+              (setq settled t)
+              (agent-shell-side--unsubscribe parent-buffer token)
+              (when (buffer-live-p side-buffer)
+                (with-current-buffer side-buffer
+                  (setq agent-shell-side--handback-pending nil)
+                  (force-mode-line-update)))
+              (agent-shell-side--stage-in-shell parent-buffer text)
+              (funcall on-staged))))
     (setq token
           (agent-shell-subscribe-to
            :shell-buffer parent-buffer
            :on-event
            (lambda (event)
              (unless settled
-               (cond
-                ((eq (map-elt event :event) 'clean-up)
-                 (setq settled t)
-                 (when (buffer-live-p side-buffer)
-                   (with-current-buffer side-buffer
-                     (setq agent-shell-side--handback-pending nil)))
-                 (message
-                  "agent-shell-side: the parent closed before taking the findings; leaving the side conversation open"))
-                ((not (agent-shell-side--parent-busy-p parent-buffer))
-                 (setq settled t)
-                 (agent-shell-side--unsubscribe parent-buffer token)
-                 (when (buffer-live-p side-buffer)
-                   (with-current-buffer side-buffer
-                     (setq agent-shell-side--handback-pending nil)))
-                 (agent-shell-side--stage-in-shell parent-buffer text)
-                 (funcall on-staged)))))))
+               (pcase (map-elt event :event)
+                 ('clean-up
+                  (setq settled t)
+                  (when (buffer-live-p side-buffer)
+                    (with-current-buffer side-buffer
+                      (setq agent-shell-side--handback-pending nil)
+                      (force-mode-line-update)))
+                  (message
+                   "agent-shell-side: the parent closed before taking the findings; leaving the side conversation open"))
+                 ('error (run-at-time 0 nil stage))
+                 (_ (funcall stage)))))))
     (message "Side conversation: %s is mid-turn; findings will be staged at its prompt when the turn ends"
              (buffer-name parent-buffer))
     token))
@@ -944,12 +1011,13 @@ place to review them."
   (cond
    ((agent-shell-side-compat-prefer-viewport-p)
     (agent-shell-side-compat-compose-in-viewport parent-buffer text)
-    (funcall on-delivered))
+    (funcall on-delivered t))
    ((agent-shell-side--parent-busy-p parent-buffer)
-    (agent-shell-side--stage-when-idle side-buffer parent-buffer text on-delivered))
+    (agent-shell-side--stage-when-idle
+     side-buffer parent-buffer text (lambda () (funcall on-delivered nil))))
    (t
     (agent-shell-side--stage-in-shell parent-buffer text)
-    (funcall on-delivered))))
+    (funcall on-delivered nil))))
 
 (defun agent-shell-side--finish-handback (side-buffer parent-buffer summary)
   "Put SUMMARY into PARENT-BUFFER and close SIDE-BUFFER once it is there.
@@ -968,9 +1036,9 @@ the parent nothing."
      (t
       (agent-shell-side--deliver-handback
        side-buffer parent-buffer (agent-shell-side--handback-text summary)
-       (lambda ()
+       (lambda (parent-shown)
          (when (buffer-live-p side-buffer)
-           (agent-shell-side--close side-buffer))))))))
+           (agent-shell-side--close side-buffer parent-shown))))))))
 
 (defun agent-shell-side--collect-summary (side-buffer parent-buffer)
   "Gather SIDE-BUFFER's next answer and hand it to PARENT-BUFFER.
@@ -1078,9 +1146,41 @@ so a session is never offered twice, nor after it has been deleted."
                            :config (agent-shell-side--config config)
                            :session-id (map-elt record :side-session-id))))
         (when (buffer-live-p side-buffer)
-          (agent-shell-side--mark-side side-buffer))
-        (agent-shell-side-links-remove (map-elt record :side-session-id))
+          (agent-shell-side--mark-side side-buffer)
+          (agent-shell-side--mirror-mode-to-viewport side-buffer)
+          (agent-shell-side--forget-record-when-loaded
+           side-buffer (map-elt record :side-session-id)))
         side-buffer))))
+
+(defun agent-shell-side--forget-record-when-loaded (side-buffer session-id)
+  "Drop SESSION-ID's link record once SIDE-BUFFER has really loaded it.
+
+Dropping it at the point the shell is started would be too early: the
+`session/load' is still in flight, and an agent that rejects it would
+leave a shell talking to nothing and no record of the session id to try
+again with.  A rejected load keeps the record, so the conversation can
+still be resumed once whatever refused it is fixed."
+  (let ((token nil)
+        (settled nil))
+    (setq token
+          (agent-shell-subscribe-to
+           :shell-buffer side-buffer
+           :on-event
+           (lambda (event)
+             (unless settled
+               (pcase (map-elt event :event)
+                 ('session-selected
+                  (setq settled t)
+                  (agent-shell-side--unsubscribe side-buffer token)
+                  (agent-shell-side-links-remove session-id))
+                 ('error
+                  (setq settled t)
+                  (agent-shell-side--unsubscribe side-buffer token)
+                  (message
+                   "agent-shell-side: could not resume %s; keeping its record"
+                   session-id))
+                 (_ nil))))))
+    token))
 
 (defun agent-shell-side--record-label (record)
   "Return a completion label for link RECORD."

@@ -42,6 +42,7 @@
 
 (declare-function agent-shell--start "agent-shell")
 (declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
+(declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 
 (defvar agent-shell--state)
 (defvar agent-shell-prefer-viewport-interaction)
@@ -147,6 +148,12 @@ was issued from a viewport buffer.  Mirrors `agent-shell--fork-shell-buffer'."
     (error "Missing agent-shell-viewport--show-buffer; %s"
            agent-shell-side-compat--upgrade-hint))
   (agent-shell-viewport--show-buffer :shell-buffer shell-buffer))
+
+(defun agent-shell-side-compat-existing-viewport (shell-buffer)
+  "Return SHELL-BUFFER's viewport buffer when one already exists, else nil."
+  (when (fboundp 'agent-shell-viewport--buffer)
+    (ignore-errors
+      (agent-shell-viewport--buffer :shell-buffer shell-buffer :existing-only t))))
 
 (defun agent-shell-side-compat-compose-in-viewport (shell-buffer text)
   "Open SHELL-BUFFER's viewport compose buffer with TEXT appended, to be sent.

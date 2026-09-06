@@ -1120,8 +1120,12 @@ typing.  Codex checks first and restores the composer on failure."
         (should-error (call-interactively #'agent-shell-side)
                       :type 'user-error)))))
 
-(defun agent-shell-side-tests--conclude-with-summary (side text)
-  "Run `agent-shell-side-conclude' in SIDE and stream TEXT back as its summary."
+(defun agent-shell-side-tests--conclude-with-summary (side text &optional real-display)
+  "Run `agent-shell-side-conclude' in SIDE and stream TEXT back as its summary.
+
+Display is stubbed out by default, so a test that only cares about where
+the findings went is not at the mercy of window layout.  REAL-DISPLAY
+keeps the real one, for the tests that are about display itself."
   (agent-shell-side-tests--silently
     (with-current-buffer side
       (agent-shell-side-conclude)))
@@ -1131,10 +1135,24 @@ typing.  Codex checks first and restores the composer on failure."
                                   agent-shell-test-subscriptions))))
     (funcall handler `((:event . agent-message-chunk)
                        (:data . ((:text-chunk . ,text)))))
-    (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+    (cl-letf (((symbol-function 'agent-shell-side--display)
+               (if real-display
+                   (symbol-function 'agent-shell-side--display)
+                 #'ignore)))
       (agent-shell-side-tests--silently
         (funcall handler '((:event . turn-complete)
                            (:data . ((:stop-reason . "end_turn")))))))))
+
+(defun agent-shell-side-tests--any-handler (buffer)
+  "Return the handler subscribed to all of BUFFER's events."
+  (nth 2 (seq-find (lambda (subscription)
+                     (and (eq (nth 0 subscription) buffer)
+                          (null (nth 1 subscription))))
+                   agent-shell-test-subscriptions)))
+
+(defun agent-shell-side-tests--viewport-for (shell)
+  "Return the stub viewport buffer standing for SHELL."
+  (agent-shell-viewport--buffer :shell-buffer shell))
 
 (defun agent-shell-side-tests--inserted-into (buffer)
   "Return the recorded insertions aimed at BUFFER."
@@ -1273,15 +1291,33 @@ Without the mark it has no lighter, no keys, does not appear in
       (should-not (buffer-local-value 'agent-shell-side--parent-buffer resumed))
       (should (equal (map-elt agent-shell-test-started :session-id) "side-9")))))
 
-(ert-deftest agent-shell-side-test-resume-drops-the-record ()
-  "Resuming consumes the kept record.
+(ert-deftest agent-shell-side-test-resume-drops-the-record-once-loaded ()
+  "Resuming consumes the kept record, but only once the session loads.
 
 The session is live again and will be recorded afresh if kept on its
 next close.  Leaving the record would offer the same session twice, and
 keep offering it after it is deleted."
   (agent-shell-side-tests--with-resumable-record
     (agent-shell-side-tests--silently (agent-shell-side-resume))
-    (should-not (agent-shell-side-links-read))))
+    (let ((resumed (current-buffer)))
+      (should (agent-shell-side-links-read))
+      (funcall (agent-shell-side-tests--any-handler resumed)
+               '((:event . session-selected)
+                 (:data . ((:session-id . "side-9")))))
+      (should-not (agent-shell-side-links-read)))))
+
+(ert-deftest agent-shell-side-test-resume-keeps-the-record-when-load-fails ()
+  "A resume the agent rejects keeps its record.
+
+Dropping it at start time would leave a shell talking to nothing and no
+record of the session id to try again with."
+  (agent-shell-side-tests--with-resumable-record
+    (agent-shell-side-tests--silently (agent-shell-side-resume))
+    (let ((resumed (current-buffer)))
+      (agent-shell-side-tests--silently
+        (funcall (agent-shell-side-tests--any-handler resumed)
+                 '((:event . error) (:data . ((:message . "no such session"))))))
+      (should (agent-shell-side-links-read)))))
 
 (ert-deftest agent-shell-side-test-resume-refuses-nesting ()
   "A resumed side conversation cannot fork another.
@@ -1324,6 +1360,132 @@ dropped into a raw shell buffer they never otherwise see."
       (let ((side (with-current-buffer parent (agent-shell-side))))
         (should-not agent-shell-test-viewport-shown)
         (should (get-buffer-window side))))))
+
+;;; Review of PR #1, 2026-09-06
+
+(ert-deftest agent-shell-side-test-conclude-viewport-does-not-redisplay-parent ()
+  "Closing after a viewport handback leaves the compose buffer alone.
+
+Re-displaying the parent shell would re-enter the viewport with nothing
+to append, and that path flips the compose buffer to read-only view
+mode, stranding the findings there unsendable."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-viewport-calls nil)
+           (agent-shell-test-viewport-shown nil))
+      (with-current-buffer parent
+        (setq-local agent-shell-test-status 'busy))
+      ;; The state viewport use actually puts the shells in: the user is
+      ;; looking at a compose buffer, so neither shell buffer owns a
+      ;; window.  Closing then has no window to hand back and falls
+      ;; through to displaying the parent, which is the bug.
+      (set-window-buffer (selected-window)
+                         (get-buffer-create " *agent-shell side test elsewhere*"))
+      (should-not (get-buffer-window parent))
+      (should-not (get-buffer-window side))
+      (agent-shell-side-tests--conclude-with-summary side "it pulls tokio-util" t)
+      (should-not (buffer-live-p side))
+      ;; Exactly one viewport call: the one carrying the findings.
+      (should (equal (length agent-shell-test-viewport-calls) 1))
+      (let ((call (car agent-shell-test-viewport-calls)))
+        (should (eq (plist-get call :shell-buffer) parent))
+        (should (plist-get call :edit))
+        (should (string-suffix-p "it pulls tokio-util" (plist-get call :append)))))))
+
+(ert-deftest agent-shell-side-test-dismiss-still-restores-the-parent ()
+  "An ordinary dismiss, with no handback, still brings the parent back.
+
+Asserts the outcome rather than the route: the parent takes over the
+window the side had, and only falls back to being displayed afresh when
+it had none."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-side-on-dismiss 'delete))
+      (agent-shell-side-tests--silently
+        (with-current-buffer side
+          (agent-shell-side-dismiss)))
+      (should-not (buffer-live-p side))
+      (should (get-buffer-window parent)))))
+
+(ert-deftest agent-shell-side-test-viewport-buffer-carries-the-side-keys ()
+  "A side opened in a viewport binds its keys where the user actually is."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (side (with-current-buffer parent (agent-shell-side)))
+           (viewport (agent-shell-side-tests--viewport-for side)))
+      (should viewport)
+      (should (buffer-local-value 'agent-shell-side-mode viewport))
+      (with-current-buffer viewport
+        (should (eq (key-binding (kbd "C-c C-k")) #'agent-shell-side-dismiss))
+        ;; And the commands resolve through to the shell behind it.
+        (should (eq (agent-shell-side--resolve-side) side))
+        (should (string-prefix-p " Side" (agent-shell-side--lighter)))))))
+
+(ert-deftest agent-shell-side-test-conclude-from-the-viewport-buffer ()
+  "Concluding works when run from the side's viewport buffer."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (side (with-current-buffer parent (agent-shell-side)))
+           (viewport (agent-shell-side-tests--viewport-for side))
+           (agent-shell-test-inserted nil))
+      (with-current-buffer side
+        (setq agent-shell-side--session-id-cache "side-1"))
+      (agent-shell-side-tests--silently
+        (with-current-buffer viewport
+          (agent-shell-side-conclude)))
+      (should (seq-find (lambda (insertion)
+                          (eq (map-elt insertion :shell-buffer) side))
+                        agent-shell-test-inserted)))))
+
+(ert-deftest agent-shell-side-test-conclude-stages-after-an-errored-turn ()
+  "A parent turn that fails still takes the findings.
+
+`error' is emitted before the shell clears its busy state, and nothing
+follows it, so testing for an idle parent inline would wait forever."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-test-inserted nil)
+           (deferred nil))
+      (with-current-buffer parent
+        (setq-local agent-shell-test-status 'busy))
+      (agent-shell-side-tests--conclude-with-summary side "findings")
+      (should (buffer-local-value 'agent-shell-side--handback-pending side))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_secs _rep fn &rest _) (push fn deferred) nil)))
+        (funcall (agent-shell-side-tests--any-handler parent)
+                 '((:event . error) (:data . ((:message . "boom"))))))
+      (should deferred)
+      ;; The shell clears busy right after dispatching the event.
+      (with-current-buffer parent
+        (setq-local agent-shell-test-status 'ready))
+      (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+        (agent-shell-side-tests--silently (funcall (car deferred))))
+      (let ((staged (seq-find (lambda (insertion)
+                                (eq (map-elt insertion :shell-buffer) parent))
+                              agent-shell-test-inserted)))
+        (should staged)
+        (should (string-suffix-p "findings" (map-elt staged :text))))
+      (should-not (buffer-live-p side)))))
+
+(ert-deftest agent-shell-side-test-lighter-reports-waiting-findings ()
+  "While findings wait for the parent, the side's mode line says so."
+  (should (equal (agent-shell-side--lighter-string 'side nil t)
+                 " Side:findings waiting"))
+  ;; Pending outranks the parent status that caused it.
+  (should (equal (agent-shell-side--lighter-string 'side 'finished t)
+                 " Side:findings waiting"))
+  (should (equal (agent-shell-side--lighter-string 'side 'finished nil)
+                 " Side:main finished"))
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (with-current-buffer parent
+        (setq-local agent-shell-test-status 'busy))
+      (agent-shell-side-tests--conclude-with-summary side "findings")
+      (with-current-buffer side
+        (should (equal (agent-shell-side--lighter) " Side:findings waiting"))))))
 
 (provide 'agent-shell-side-tests)
 

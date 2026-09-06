@@ -163,7 +163,9 @@ is recorded afresh.
 
 With `agent-shell-prefer-viewport-interaction` set, or when started from a
 viewport buffer, the side conversation opens through a viewport as
-`agent-shell-fork` would. The handback still lands in the parent's shell buffer.
+`agent-shell-fork` would, and the keys above work from that compose buffer too.
+The handback then goes to the parent's own compose buffer rather than its shell
+prompt.
 
 ## agent-shell internals
 

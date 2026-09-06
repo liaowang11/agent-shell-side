@@ -51,11 +51,28 @@
 (defvar agent-shell-test-viewport-calls nil
   "Full keyword arguments of each `agent-shell-viewport--show-buffer' call.")
 
+(defvar-local agent-shell-test-viewport-shell nil
+  "In a stub viewport buffer, the shell buffer it stands for.")
+(put 'agent-shell-test-viewport-shell 'permanent-local t)
+
+(cl-defun agent-shell-viewport--buffer (&key shell-buffer existing-only)
+  "Return the stub viewport buffer for SHELL-BUFFER, if one exists."
+  (ignore existing-only)
+  (seq-find (lambda (buffer)
+              (eq (buffer-local-value 'agent-shell-test-viewport-shell buffer)
+                  shell-buffer))
+            (buffer-list)))
+
 (cl-defun agent-shell-viewport--show-buffer (&rest args &key shell-buffer &allow-other-keys)
-  "Record a viewport display instead of opening one."
+  "Record a viewport display, creating the stub viewport buffer on demand."
   (push shell-buffer agent-shell-test-viewport-shown)
   (push args agent-shell-test-viewport-calls)
-  nil)
+  (or (agent-shell-viewport--buffer :shell-buffer shell-buffer)
+      (let ((buffer (generate-new-buffer " *agent-shell side test viewport*")))
+        (with-current-buffer buffer
+          (agent-shell-viewport-edit-mode)
+          (setq-local agent-shell-test-viewport-shell shell-buffer))
+        buffer)))
 
 (cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
   "Record an insertion instead of touching a shell.
@@ -77,12 +94,17 @@ Refuses when the target is busy, as the real one does
   default-directory)
 
 (cl-defun agent-shell-shell-buffer (&key viewport-buffer no-error no-create)
-  "Return the current buffer when it is a shell."
-  (ignore viewport-buffer no-create)
-  (if (derived-mode-p 'agent-shell-mode)
-      (current-buffer)
-    (unless no-error
-      (user-error "Not in a shell"))))
+  "Return the shell buffer for VIEWPORT-BUFFER, or for the current buffer.
+
+Resolves a viewport buffer to the shell it stands for, as the real one
+does, so a command run from a viewport reaches the right shell."
+  (ignore no-create)
+  (let ((buffer (or viewport-buffer (current-buffer))))
+    (cond
+     ((buffer-local-value 'agent-shell-test-viewport-shell buffer))
+     ((with-current-buffer buffer (derived-mode-p 'agent-shell-mode)) buffer)
+     (no-error nil)
+     (t (user-error "Not in a shell")))))
 
 (defun agent-shell-get-config (buffer)
   "Return BUFFER's agent config."
