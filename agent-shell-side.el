@@ -546,7 +546,7 @@ The side keys are deliberately *not* bound in a viewport buffer.
 `agent-shell-viewport-edit-mode-map' already gives the same two keys to
 discarding and to queueing a draft, and a minor mode would outrank both.
 Taking them over would turn cancelling a draft into deleting a forked
-session.  Use \[execute-extended-command] there, or bind the side
+session.  Use \\[execute-extended-command] there, or bind the side
 commands to keys of your own choosing.
 
 `:no-create t' rules out the branch that would ask the user which shell
@@ -600,8 +600,14 @@ twice."
   "Return COMMAND's key in `agent-shell-side-mode-map', described for humans.
 
 `where-is-internal' with FIRSTONLY returns a key vector rather than a
-list of them, so the result goes straight to `key-description'."
-  (if-let* ((key (where-is-internal command agent-shell-side-mode-map t)))
+list of them, so the result goes straight to `key-description'.
+
+The key is only offered when it really runs COMMAND in this buffer.  The
+mode is not on in a viewport compose buffer, deliberately, so naming a
+key there would send the user to one that is either unbound or somebody
+else's."
+  (if-let* ((key (where-is-internal command agent-shell-side-mode-map t))
+            ((eq (key-binding key) command)))
       (key-description key)
     (format "M-x %s" command)))
 
@@ -1160,20 +1166,31 @@ Dropping it when the shell is started would be too early: `session/load'
 is still in flight, and an agent that rejects it would leave no record of
 the session id to try again with.
 
-`session-selected' is too early for the same reason -- it is emitted
-before the load request is even sent.  `session-restored' is the one that
-means the transcript came back and the shell has settled.
+Which event says so took two wrong answers to find, so the reasoning is
+worth keeping.  `session-selected' is emitted before the load request is
+even sent, so it is exactly as early as not waiting at all.
+`session-restored' sounds right and is not: it means a buffered
+transcript was replayed, which only happens when
+`agent-shell-transcript-verbosity' asks for one, so on the default
+setting it never fires and the record would never be dropped.
 
-A rejected load is not reported as an error to watch for: `agent-shell'
-answers it by saying so and quietly starting a different session, which
-can itself emit `session-restored'.  So the id is checked rather than the
-event trusted, and a restore of anything else leaves the record alone."
+`prompt-ready' is the one that holds.  It is emitted once the init
+pipeline finishes, on every path -- a load that worked, a load that
+failed and fell back to another session, and a plain new session -- and
+always after the session id has been written into the shell's state.
+
+That last part is what makes the check possible, and the check is what
+makes this correct: a rejected load is never reported as an error to
+watch for, because `agent-shell' answers it by saying so and quietly
+starting a different session.  So the id is compared rather than the
+event trusted, and a shell that came back as anything else keeps its
+record."
   (let ((token nil)
         (settled nil))
     (setq token
           (agent-shell-subscribe-to
            :shell-buffer side-buffer
-           :event 'session-restored
+           :event 'prompt-ready
            :on-event
            (lambda (_event)
              (unless settled
@@ -1325,24 +1342,29 @@ mid-thought.  So this switches, and closes nothing for you."
 (defun agent-shell-side-describe ()
   "Echo what this side conversation is, and how to leave it."
   (interactive)
-  (cond
-   ((agent-shell-side-buffer-p)
-    (message "Side conversation of %s%s.  %s switches, %s closes"
-             (if-let* ((parent (agent-shell-side--live-buffer
-                                agent-shell-side--parent-buffer)))
-                 (buffer-name parent)
-               "a closed shell")
-             (if-let* ((label (agent-shell-side--status-label
-                               agent-shell-side--parent-status)))
-                 (concat " (" label ")")
-               "")
-             (agent-shell-side--key-for #'agent-shell-side-toggle)
-             (agent-shell-side--key-for #'agent-shell-side-dismiss)))
-   ((agent-shell-side--live-buffer agent-shell-side--side-buffer)
-    (message "Side conversation open in %s.  %s switches to it"
-             (buffer-name agent-shell-side--side-buffer)
-             (agent-shell-side--key-for #'agent-shell-side-toggle)))
-   (t (message "No side conversation here"))))
+  (let ((shell (agent-shell-side--this-shell)))
+    (cond
+     ((agent-shell-side-buffer-p shell)
+      (message "Side conversation of %s%s.  %s switches, %s closes"
+               (if-let* ((parent (agent-shell-side--live-buffer
+                                  (buffer-local-value
+                                   'agent-shell-side--parent-buffer shell))))
+                   (buffer-name parent)
+                 "a closed shell")
+               (if-let* ((label (agent-shell-side--status-label
+                                 (buffer-local-value
+                                  'agent-shell-side--parent-status shell))))
+                   (concat " (" label ")")
+                 "")
+               (agent-shell-side--key-for #'agent-shell-side-toggle)
+               (agent-shell-side--key-for #'agent-shell-side-dismiss)))
+     ((agent-shell-side--live-buffer
+       (buffer-local-value 'agent-shell-side--side-buffer shell))
+      (message "Side conversation open in %s.  %s switches to it"
+               (buffer-name (buffer-local-value
+                             'agent-shell-side--side-buffer shell))
+               (agent-shell-side--key-for #'agent-shell-side-toggle)))
+     (t (message "No side conversation here")))))
 
 (provide 'agent-shell-side)
 

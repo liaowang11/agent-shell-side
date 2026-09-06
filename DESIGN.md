@@ -241,12 +241,17 @@ The review of the section 5 work found five defects, three of them
 introduced by that work and two in the paths it touched. All are fixed
 on the same branch.
 
-A second review of those fixes found that two of them were themselves
-wrong, one dangerously so. Both are recorded in place below rather than
-as a separate list, since what matters is the fix that stands. The
-lesson worth keeping: every wrong fix here came from assuming an
-upstream event meant what its name suggested, instead of reading where
-it is emitted.
+It took three rounds to get there. A review of the fixes found two of
+them wrong, one dangerously so; a review of *those* found the
+replacement for item 5 wrong again. Each wrong version is recorded in
+place below rather than as a separate list, since what matters is the
+fix that stands and why the obvious alternatives do not.
+
+One lesson runs through all of them: every wrong fix came from trusting
+an upstream event to mean what its name suggests. `session-selected`
+does not mean a session was loaded. `session-restored` does not mean a
+session came back. The only reliable move is to read the emission site
+and what runs either side of it.
 
 1. **Closing the side made the viewport handback unsendable.** The close
    path re-displays the parent when it has no window, which under
@@ -312,11 +317,31 @@ it is emitted.
    different one, so the `error` branch was dead code for the case it was
    written for.
 
-   The signal that actually means the transcript came back is
-   `session-restored`, emitted once the shell has settled
-   (`agent-shell.el:8768`). Because the failure path can itself restore a
-   *different* session, the record is dropped only when the shell's
-   session id matches the record's.
+   The second attempt keyed off `session-restored`, which was wrong in
+   the opposite direction. That event does not mean "the session came
+   back"; it means a buffered transcript was replayed, and the buffering
+   only happens when `agent-shell-transcript-verbosity` asks for one
+   (`agent-shell.el:8668`, guarded by `--has-pending-restore-p`). The
+   default is `minimal`, so on a stock setup it never fires at all and
+   the record would never be dropped. Worse than the original bug: the
+   next resume would offer a session already deleted, and agent-shell
+   answers a rejected load by quietly loading a different one, which this
+   package would then mark as the side conversation. The user would
+   silently get the wrong conversation.
+
+   What holds is `prompt-ready`. It is emitted when the init pipeline
+   finishes (`agent-shell.el:2561`) on every path -- a load that worked,
+   a load that failed and fell back, a plain new session -- and always
+   after the session id is written into the shell's state
+   (`agent-shell.el:8810`, before `--finalize-session-init`). Since a
+   rejected load is never surfaced as an error, the id is compared rather
+   than the event trusted: a shell that came back as anything else keeps
+   its record.
+
+   The test for this was wrong too, in a way worth naming. It set the
+   package's own session-id cache, which only the fork path ever fills; a
+   resumed shell reads its id from agent-shell's state. The test was
+   passing against a source the real path never uses.
 
 ## Order of work
 

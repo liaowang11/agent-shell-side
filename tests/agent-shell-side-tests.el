@@ -1150,12 +1150,23 @@ keeps the real one, for the tests that are about display itself."
                           (null (nth 1 subscription))))
                    agent-shell-test-subscriptions)))
 
-(defun agent-shell-side-tests--restored-handler (buffer)
-  "Return the handler subscribed to BUFFER's `session-restored' event."
+(defun agent-shell-side-tests--ready-handler (buffer)
+  "Return the handler subscribed to BUFFER's `prompt-ready' event."
   (nth 2 (seq-find (lambda (subscription)
                      (and (eq (nth 0 subscription) buffer)
-                          (eq (nth 1 subscription) 'session-restored)))
+                          (eq (nth 1 subscription) 'prompt-ready)))
                    agent-shell-test-subscriptions)))
+
+(defun agent-shell-side-tests--settle-resumed (buffer session-id)
+  "Finish BUFFER's resume as agent-shell would, landing on SESSION-ID.
+
+Writes the id into the shell state rather than the package's own cache:
+the cache is filled by the fork path only, so a resumed shell reads its
+id from the state, and a test that set the cache would be testing a
+source the real path never uses."
+  (with-current-buffer buffer
+    (setq-local agent-shell--state (list (cons :session (list (cons :id session-id))))))
+  (funcall (agent-shell-side-tests--ready-handler buffer) '((:event . prompt-ready))))
 
 (defun agent-shell-side-tests--viewport-for (shell)
   "Return the stub viewport buffer standing for SHELL."
@@ -1307,30 +1318,26 @@ keep offering it after it is deleted."
   (agent-shell-side-tests--with-resumable-record
     (agent-shell-side-tests--silently (agent-shell-side-resume))
     (let ((resumed (current-buffer)))
-      ;; `session-selected' is emitted before the load is even sent, so it
-      ;; must not be the signal that drops the record.
+      ;; `session-selected' is emitted before the load is even sent, and
+      ;; `session-restored' only fires when a transcript was buffered for
+      ;; replay, which the default verbosity never asks for.  Neither can
+      ;; be the signal.
       (should (agent-shell-side-links-read))
-      (with-current-buffer resumed
-        (setq agent-shell-side--session-id-cache "side-9"))
-      (funcall (agent-shell-side-tests--restored-handler resumed)
-               '((:event . session-restored)))
+      (agent-shell-side-tests--settle-resumed resumed "side-9")
       (should-not (agent-shell-side-links-read)))))
 
 (ert-deftest agent-shell-side-test-resume-keeps-the-record-when-load-fails ()
   "A resume the agent rejects keeps its record.
 
 A rejected load is not reported as an error to watch for: agent-shell
-says so and quietly starts a different session, which can itself emit
-`session-restored'.  So a restore carrying any other session id must
-leave the record alone."
+says so and quietly starts a different session, and that shell reaches
+its prompt like any other.  So the id is what decides, and a shell that
+came back as anything else must leave the record alone."
   (agent-shell-side-tests--with-resumable-record
     (agent-shell-side-tests--silently (agent-shell-side-resume))
     (let ((resumed (current-buffer)))
-      (with-current-buffer resumed
-        (setq agent-shell-side--session-id-cache "some-other-session"))
       (agent-shell-side-tests--silently
-        (funcall (agent-shell-side-tests--restored-handler resumed)
-                 '((:event . session-restored))))
+        (agent-shell-side-tests--settle-resumed resumed "some-other-session"))
       (should (agent-shell-side-links-read)))))
 
 (ert-deftest agent-shell-side-test-resume-refuses-nesting ()
@@ -1438,6 +1445,31 @@ session.  The commands still reach the shell, by name."
       (should-not (buffer-local-value 'agent-shell-side-mode viewport))
       (with-current-buffer viewport
         (should (eq (agent-shell-side--resolve-side) side))))))
+
+(ert-deftest agent-shell-side-test-describe-works-from-a-viewport ()
+  "Describing a side conversation works from its viewport compose buffer.
+
+It also names a way in that really works there: the keys are not bound in
+a viewport, so it must say the command name instead."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (side (with-current-buffer parent (agent-shell-side)))
+           (viewport (agent-shell-side-tests--viewport-for side))
+           (said (with-current-buffer viewport
+                   (car (agent-shell-side-tests--silently
+                          (agent-shell-side-describe))))))
+      (should (string-prefix-p "Side conversation of " said))
+      (should (string-match-p "M-x agent-shell-side-toggle" said))
+      (should-not (string-match-p "C-c C-b" said)))))
+
+(ert-deftest agent-shell-side-test-describe-names-keys-in-the-shell ()
+  "In the shell itself, where the keys are bound, it names the keys."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (said (with-current-buffer side
+                   (car (agent-shell-side-tests--silently
+                          (agent-shell-side-describe))))))
+      (should (string-match-p "C-c C-b" said)))))
 
 (ert-deftest agent-shell-side-test-viewport-of-an-unrelated-shell-is-refused ()
   "A viewport whose shell is no side conversation resolves to nothing.
