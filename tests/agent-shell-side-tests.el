@@ -1120,104 +1120,123 @@ typing.  Codex checks first and restores the composer on failure."
         (should-error (call-interactively #'agent-shell-side)
                       :type 'user-error)))))
 
-(ert-deftest agent-shell-side-test-conclude-queues-into-a-busy-parent ()
-  "A busy parent gets the findings through the prompt queue, with the user's say.
+(defun agent-shell-side-tests--conclude-with-summary (side text)
+  "Run `agent-shell-side-conclude' in SIDE and stream TEXT back as its summary."
+  (agent-shell-side-tests--silently
+    (with-current-buffer side
+      (agent-shell-side-conclude)))
+  (let ((handler (nth 2 (seq-find (lambda (subscription)
+                                    (and (eq (nth 0 subscription) side)
+                                         (null (nth 1 subscription))))
+                                  agent-shell-test-subscriptions))))
+    (funcall handler `((:event . agent-message-chunk)
+                       (:data . ((:text-chunk . ,text)))))
+    (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+      (agent-shell-side-tests--silently
+        (funcall handler '((:event . turn-complete)
+                           (:data . ((:stop-reason . "end_turn")))))))))
 
-Inserting at the prompt is refused while a turn runs, so the findings are
-offered in the minibuffer for the user to extend, then queued to start
-the parent's next turn.  Never steered: a steer can replace what the
-parent is doing, which is the disruption a side conversation exists to
-avoid."
+(defun agent-shell-side-tests--inserted-into (buffer)
+  "Return the recorded insertions aimed at BUFFER."
+  (seq-filter (lambda (insertion) (eq (map-elt insertion :shell-buffer) buffer))
+              agent-shell-test-inserted))
+
+(defun agent-shell-side-tests--parent-handlers (parent)
+  "Return every handler subscribed to all of PARENT's events."
+  (mapcar (lambda (subscription) (nth 2 subscription))
+          (seq-filter (lambda (subscription)
+                        (and (eq (nth 0 subscription) parent)
+                             (null (nth 1 subscription))))
+                      agent-shell-test-subscriptions)))
+
+(ert-deftest agent-shell-side-test-conclude-waits-for-a-busy-parent ()
+  "A busy parent gets the findings at its prompt once its turn ends.
+
+Inserting at the prompt is refused while a turn runs, and would be
+swallowed by the streaming output if it were not, so the findings wait
+for the first event that finds the parent idle.  The side conversation
+stays open until then, so nothing is lost if the parent dies first.  The
+findings are staged, not sent: sending, queueing, or steering is the
+user's call."
   (agent-shell-side-tests--with-parent
     (let* ((side (agent-shell-side-tests--start-side parent))
            (agent-shell-side-on-dismiss 'delete)
-           (agent-shell-test-inserted nil)
-           (agent-shell-test-queued nil))
-      (agent-shell-side-tests--silently
-        (with-current-buffer side
-          (agent-shell-side-conclude)))
+           (agent-shell-test-inserted nil))
       (with-current-buffer parent
         (setq-local agent-shell-test-status 'busy))
-      (let ((handler (nth 2 (seq-find (lambda (subscription)
-                                        (and (eq (nth 0 subscription) side)
-                                             (null (nth 1 subscription))))
-                                      agent-shell-test-subscriptions))))
-        (funcall handler '((:event . agent-message-chunk)
-                           (:data . ((:text-chunk . "it pulls tokio-util")))))
-        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
-          (funcall handler '((:event . turn-complete)
-                             (:data . ((:stop-reason . "end_turn")))))))
-      (should-not (seq-find (lambda (insertion)
-                              (eq (map-elt insertion :shell-buffer) parent))
-                            agent-shell-test-inserted))
-      (let ((queued (car agent-shell-test-queued)))
-        (should queued)
-        (should (eq (map-elt queued :shell-buffer) parent))
-        (should (eq (map-elt queued :disposition) 'queue))
-        (should (string-match-p "it pulls tokio-util" (map-elt queued :prompt)))
-        (should (string-suffix-p " and then?" (map-elt queued :prompt))))
-      (should-not (buffer-live-p side)))))
-
-(ert-deftest agent-shell-side-test-conclude-quit-while-adding-leaves-side-open ()
-  "Quitting the minibuffer keeps the side conversation and sends nothing."
-  (agent-shell-side-tests--with-parent
-    (let* ((side (agent-shell-side-tests--start-side parent))
-           (agent-shell-side-on-dismiss 'delete)
-           (agent-shell-test-queue-read-suffix nil)
-           (agent-shell-test-queued nil))
-      (agent-shell-side-tests--silently
-        (with-current-buffer side
-          (agent-shell-side-conclude)))
+      (agent-shell-side-tests--conclude-with-summary side "it pulls tokio-util")
+      (should-not (agent-shell-side-tests--inserted-into parent))
+      (should (buffer-live-p side))
+      (should (buffer-local-value 'agent-shell-side--handback-pending side))
+      ;; A chunk while still busy changes nothing.
+      (dolist (handler (agent-shell-side-tests--parent-handlers parent))
+        (funcall handler '((:event . agent-message-chunk))))
+      (should-not (agent-shell-side-tests--inserted-into parent))
+      ;; The parent's turn ends: prompt printed, busy cleared, event emitted.
       (with-current-buffer parent
-        (setq-local agent-shell-test-status 'busy))
-      (let ((handler (nth 2 (seq-find (lambda (subscription)
-                                        (and (eq (nth 0 subscription) side)
-                                             (null (nth 1 subscription))))
-                                      agent-shell-test-subscriptions))))
-        (funcall handler '((:event . agent-message-chunk)
-                           (:data . ((:text-chunk . "findings")))))
+        (setq-local agent-shell-test-status 'ready))
+      (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
         (agent-shell-side-tests--silently
-          (funcall handler '((:event . turn-complete)
-                             (:data . ((:stop-reason . "end_turn")))))))
-      (should-not agent-shell-test-queued)
-      (should (buffer-live-p side)))))
-
-(ert-deftest agent-shell-side-test-conclude-stages-when-parent-frees-up ()
-  "A parent that finishes while the user types gets the findings staged, not sent.
-
-The queue would submit a prompt to an idle shell at once, and sending
-was never on offer."
-  (agent-shell-side-tests--with-parent
-    (let* ((side (agent-shell-side-tests--start-side parent))
-           (agent-shell-side-on-dismiss 'delete)
-           (agent-shell-test-inserted nil)
-           (agent-shell-test-queued nil))
-      (agent-shell-side-tests--silently
-        (with-current-buffer side
-          (agent-shell-side-conclude)))
-      (with-current-buffer parent
-        (setq-local agent-shell-test-status 'busy))
-      (let ((handler (nth 2 (seq-find (lambda (subscription)
-                                        (and (eq (nth 0 subscription) side)
-                                             (null (nth 1 subscription))))
-                                      agent-shell-test-subscriptions))))
-        (funcall handler '((:event . agent-message-chunk)
-                           (:data . ((:text-chunk . "findings")))))
-        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore)
-                  ((symbol-function 'agent-shell--prompt-queue-read)
-                   (lambda (&rest args)
-                     (with-current-buffer parent
-                       (setq-local agent-shell-test-status 'ready))
-                     (concat (plist-get args :initial) "more"))))
-          (funcall handler '((:event . turn-complete)
-                             (:data . ((:stop-reason . "end_turn")))))))
-      (should-not agent-shell-test-queued)
+          (dolist (handler (agent-shell-side-tests--parent-handlers parent))
+            (funcall handler '((:event . turn-complete))))))
       (let ((staged (seq-find (lambda (insertion)
                                 (eq (map-elt insertion :shell-buffer) parent))
                               agent-shell-test-inserted)))
         (should staged)
         (should-not (map-elt staged :submit))
-        (should (string-suffix-p "more" (map-elt staged :text))))
+        (should (string-suffix-p "it pulls tokio-util" (map-elt staged :text))))
+      (should-not (buffer-live-p side)))))
+
+(ert-deftest agent-shell-side-test-conclude-refuses-a-second-pending-handback ()
+  "While findings wait for the parent, concluding again is refused."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-test-inserted nil))
+      (with-current-buffer parent
+        (setq-local agent-shell-test-status 'busy))
+      (agent-shell-side-tests--conclude-with-summary side "findings")
+      (with-current-buffer side
+        (should-error (agent-shell-side-conclude) :type 'user-error)))))
+
+(ert-deftest agent-shell-side-test-conclude-pending-survives-a-closed-parent ()
+  "A parent that closes before taking the findings leaves the side open."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-test-inserted nil))
+      (with-current-buffer parent
+        (setq-local agent-shell-test-status 'busy))
+      (agent-shell-side-tests--conclude-with-summary side "findings")
+      (agent-shell-side-tests--silently
+        (dolist (handler (agent-shell-side-tests--parent-handlers parent))
+          (funcall handler '((:event . clean-up)))))
+      (should-not (agent-shell-side-tests--inserted-into parent))
+      (should (buffer-live-p side))
+      (should-not (buffer-local-value 'agent-shell-side--handback-pending side)))))
+
+(ert-deftest agent-shell-side-test-conclude-composes-in-the-viewport ()
+  "With viewport interaction preferred, findings go to the compose buffer.
+
+Opened in edit mode so a busy parent still takes them; the compose
+buffer's own keys send, queue, or steer.  Nothing touches the shell
+prompt and nothing is submitted."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-inserted nil)
+           (agent-shell-test-viewport-calls nil))
+      (with-current-buffer parent
+        (setq-local agent-shell-test-status 'busy))
+      (agent-shell-side-tests--conclude-with-summary side "it pulls tokio-util")
+      (should-not (seq-find (lambda (insertion)
+                              (eq (map-elt insertion :shell-buffer) parent))
+                            agent-shell-test-inserted))
+      (let ((call (car agent-shell-test-viewport-calls)))
+        (should call)
+        (should (eq (plist-get call :shell-buffer) parent))
+        (should (plist-get call :edit))
+        (should-not (plist-get call :submit))
+        (should (string-suffix-p "it pulls tokio-util" (plist-get call :append))))
       (should-not (buffer-live-p side)))))
 
 (defmacro agent-shell-side-tests--with-resumable-record (&rest body)

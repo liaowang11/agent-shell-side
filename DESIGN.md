@@ -1,6 +1,6 @@
 # Design: open work for agent-shell-side
 
-Status as of 2026-09-06. `make check` is green (91 ERT tests against stubs)
+Status as of 2026-09-06. `make check` is green (92 ERT tests against stubs)
 and `make live-check` passes 10 of 10 against a real claude-agent-acp 0.70.
 
 Four questions were open when this was written. This document records the
@@ -187,14 +187,23 @@ Bill's, and what each changed.
 
 1. **Handback into a busy parent.** `agent-shell-insert` refuses while a
    turn runs, so the summary was lost with an opaque subscriber error, and
-   the README promised the opposite. Decision: queue, never send directly,
-   and let the user add prompting. The summary is offered in the minibuffer
-   prefilled (`agent-shell--prompt-queue-read`), then queued with an
-   explicit `queue` disposition so `agent-shell-prompt-while-busy`'s
-   default of steering cannot replace the parent's work. If the parent
-   finishes while the user types, the text is staged instead, since a
-   queue submits at once to an idle shell. Quitting delivers nothing and
-   leaves the side conversation open.
+   the README promised the opposite. Decision: never send on the user's
+   behalf and never use the minibuffer, since a conclusion is long; insert
+   it where the user writes and let them send, queue, or steer. With
+   `agent-shell-prefer-viewport-interaction` that is the parent's compose
+   buffer, opened with `:edit t` so a busy parent still takes it. Otherwise
+   it is the shell prompt, which a busy shell cannot take:
+   `shell-maker--output-filter` inserts at `point-max`, so staged text
+   would be swallowed by the streaming response, which is why upstream
+   refuses. The parent prints its prompt and clears busy in
+   `shell-maker-finish-output` before emitting `turn-complete`, so the
+   findings wait for the first parent event that finds it idle, then land
+   at the prompt. The side conversation stays open, marked pending, until
+   then; a parent that closes first leaves it as it was.
+
+   A first cut queued through `agent-shell--prompt-queue-read` with the
+   summary prefilled in the minibuffer. Bill rejected it: the conclusion is
+   normally large, and the minibuffer is no place to review it.
 2. **A resumed side conversation was not one.** `agent-shell-side-resume`
    never set the marker, so the buffer had no keys, no lighter, no place
    in the listing, and could nest. Decision: mark it a side with no parent,

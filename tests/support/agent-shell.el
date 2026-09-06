@@ -48,32 +48,14 @@
 (defvar agent-shell-test-viewport-shown nil
   "Shell buffers passed to `agent-shell-viewport--show-buffer', newest first.")
 
-(cl-defun agent-shell-viewport--show-buffer (&key shell-buffer &allow-other-keys)
+(defvar agent-shell-test-viewport-calls nil
+  "Full keyword arguments of each `agent-shell-viewport--show-buffer' call.")
+
+(cl-defun agent-shell-viewport--show-buffer (&rest args &key shell-buffer &allow-other-keys)
   "Record a viewport display instead of opening one."
   (push shell-buffer agent-shell-test-viewport-shown)
+  (push args agent-shell-test-viewport-calls)
   nil)
-
-(defvar agent-shell-test-queued nil
-  "Calls to `agent-shell--prompt-send', newest first, as alists.")
-
-(defvar agent-shell-test-queue-read-suffix " and then?"
-  "Text the stubbed minibuffer read appends to its initial contents.
-
-Nil makes the read signal `quit', as a user pressing \`C-g' would.")
-
-(cl-defun agent-shell--prompt-queue-read (&key initial)
-  "Return INITIAL with the user's stubbed addition, or quit."
-  (unless agent-shell-test-queue-read-suffix
-    (signal 'quit nil))
-  (concat initial agent-shell-test-queue-read-suffix))
-
-(cl-defun agent-shell--prompt-send (&key prompt disposition on-delivered)
-  "Record a prompt handed to the queue in the current buffer."
-  (ignore on-delivered)
-  (push (list (cons :prompt prompt)
-              (cons :disposition disposition)
-              (cons :shell-buffer (current-buffer)))
-        agent-shell-test-queued))
 
 (cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
   "Record an insertion instead of touching a shell.

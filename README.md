@@ -51,12 +51,15 @@ addressed to the parent, waits for it, puts it at the parent's prompt, and close
 the side conversation. The summary is left for you to review rather than sent.
 Set `agent-shell-side-handback-submit` to send it instead.
 
-A parent that is mid-turn cannot take text at its prompt. The summary is then
-offered in the minibuffer, prefilled, for you to add your own prompting, and
-queued to start the parent's next turn when the current one ends. It is queued,
-never steered: a steer can replace what the parent is doing, which is the
-disruption a side conversation exists to avoid. Quit the minibuffer and the side
-conversation stays open with nothing sent.
+Where the summary lands follows how you use `agent-shell`. With
+`agent-shell-prefer-viewport-interaction` it is appended to the parent's viewport
+compose buffer, opened in edit mode so this works while the parent is mid-turn;
+the compose buffer's own keys then send, queue, or steer it. Otherwise it goes
+to the parent's shell prompt: at once when the parent is idle, or as soon as its
+turn ends when it is not. A busy shell cannot take text at its prompt, since
+shell-maker appends output at the end of the buffer and would swallow it. The
+side conversation stays open until the findings are staged, so a parent that is
+killed first loses nothing, and its mode line says the findings are waiting.
 
 If the summary comes back empty, or the parent is gone, the side conversation is
 left open rather than closed on nothing. Customize

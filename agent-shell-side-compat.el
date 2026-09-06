@@ -28,10 +28,9 @@
 ;;    the kill ring.  `agent-shell-side' prefers the id it captured from
 ;;    the public `session-selected' event and falls back to this.
 ;;
-;; Two more are borrowed for the user's sake rather than out of need:
-;; the prompt queue, so findings can reach a busy parent the way
-;; `agent-shell-prompt-queue' would take them, and the viewport, so a
-;; side conversation opens where a viewport user actually looks.
+;; One more is borrowed for the user's sake rather than out of need: the
+;; viewport, so a side conversation opens, and its findings land, where a
+;; viewport user actually looks.
 ;;
 ;; Each shim checks for what it needs and signals a message naming the
 ;; missing piece, rather than failing somewhere deeper.
@@ -42,8 +41,6 @@
 (eval-when-compile (require 'cl-lib))
 
 (declare-function agent-shell--start "agent-shell")
-(declare-function agent-shell--prompt-queue-read "agent-shell-prompt-queue")
-(declare-function agent-shell--prompt-send "agent-shell-prompt-queue")
 (declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
 
 (defvar agent-shell--state)
@@ -129,28 +126,6 @@ version it points to."
                 agent-shell-side-compat--upgrade-hint)
        (signal (car err) (cdr err))))))
 
-(defun agent-shell-side-compat-read-queue-prompt (shell-buffer initial)
-  "Read a prompt for SHELL-BUFFER in the minibuffer, prefilled with INITIAL.
-
-The same read `agent-shell-prompt-queue' uses, so @ and / completion work
-in it.  Signals `quit' when the user gives up, like any minibuffer read."
-  (unless (fboundp 'agent-shell--prompt-queue-read)
-    (error "Missing agent-shell--prompt-queue-read; %s"
-           agent-shell-side-compat--upgrade-hint))
-  (with-current-buffer shell-buffer
-    (agent-shell--prompt-queue-read :initial initial)))
-
-(defun agent-shell-side-compat-queue-prompt (shell-buffer prompt)
-  "Queue PROMPT in SHELL-BUFFER to start its next turn.
-
-Always queues, never steers: `agent-shell-prompt-while-busy' defaults to
-steering, and a steer can replace what the shell is already doing."
-  (unless (fboundp 'agent-shell--prompt-send)
-    (error "Missing agent-shell--prompt-send; %s"
-           agent-shell-side-compat--upgrade-hint))
-  (with-current-buffer shell-buffer
-    (agent-shell--prompt-send :prompt prompt :disposition 'queue)))
-
 (defun agent-shell-side-compat-viewport-buffer-p (&optional buffer)
   "Return non-nil when BUFFER, or the current one, is a viewport buffer."
   (with-current-buffer (or buffer (current-buffer))
@@ -172,6 +147,19 @@ was issued from a viewport buffer.  Mirrors `agent-shell--fork-shell-buffer'."
     (error "Missing agent-shell-viewport--show-buffer; %s"
            agent-shell-side-compat--upgrade-hint))
   (agent-shell-viewport--show-buffer :shell-buffer shell-buffer))
+
+(defun agent-shell-side-compat-compose-in-viewport (shell-buffer text)
+  "Open SHELL-BUFFER's viewport compose buffer with TEXT appended, to be sent.
+
+Opens in edit mode even while the shell is busy, which is the point: the
+compose buffer is the one surface a viewport user can write in while a
+turn runs, and its send keys let them queue or steer what they wrote."
+  (unless (fboundp 'agent-shell-viewport--show-buffer)
+    (error "Missing agent-shell-viewport--show-buffer; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (agent-shell-viewport--show-buffer :shell-buffer shell-buffer
+                                     :append text
+                                     :edit t))
 
 (provide 'agent-shell-side-compat)
 
