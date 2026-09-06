@@ -28,6 +28,10 @@
 ;;    the kill ring.  `agent-shell-side' prefers the id it captured from
 ;;    the public `session-selected' event and falls back to this.
 ;;
+;; One more is borrowed for the user's sake rather than out of need: the
+;; viewport, so a side conversation opens, and its findings land, where a
+;; viewport user actually looks.
+;;
 ;; Each shim checks for what it needs and signals a message naming the
 ;; missing piece, rather than failing somewhere deeper.
 
@@ -37,8 +41,10 @@
 (eval-when-compile (require 'cl-lib))
 
 (declare-function agent-shell--start "agent-shell")
+(declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
 
 (defvar agent-shell--state)
+(defvar agent-shell-prefer-viewport-interaction)
 
 (defconst agent-shell-side-compat--upgrade-hint
   "agent-shell-side needs agent-shell 0.74 or newer"
@@ -65,7 +71,7 @@ The capability is recorded at `initialize' from
 `agentCapabilities.sessionCapabilities.fork'."
   (let ((state (agent-shell-side-compat--state shell-buffer)))
     (unless (assq :supports-session-fork state)
-      (error "agent-shell does not track session/fork support; %s"
+      (error "Cannot read session/fork support from agent-shell; %s"
              agent-shell-side-compat--upgrade-hint))
     (and (map-elt state :supports-session-fork) t)))
 
@@ -105,7 +111,7 @@ The keyword is not checked before the call: `agent-shell--start' is a
 an unknown keyword itself, and that error is re-raised here with the
 version it points to."
   (unless (fboundp 'agent-shell--start)
-    (error "agent-shell--start is missing; %s"
+    (error "Missing agent-shell--start; %s"
            agent-shell-side-compat--upgrade-hint))
   (condition-case err
       (agent-shell--start :config config
@@ -116,9 +122,44 @@ version it points to."
                           :outgoing-request-decorator outgoing-request-decorator)
     (error
      (if (string-match-p "fork-session-id" (error-message-string err))
-         (error "agent-shell--start no longer accepts :fork-session-id; %s"
+         (error "Rejected :fork-session-id in agent-shell--start; %s"
                 agent-shell-side-compat--upgrade-hint)
        (signal (car err) (cdr err))))))
+
+(defun agent-shell-side-compat-viewport-buffer-p (&optional buffer)
+  "Return non-nil when BUFFER, or the current one, is a viewport buffer."
+  (with-current-buffer (or buffer (current-buffer))
+    (derived-mode-p 'agent-shell-viewport-view-mode
+                    'agent-shell-viewport-edit-mode)))
+
+(defun agent-shell-side-compat-prefer-viewport-p ()
+  "Return non-nil when shells should be shown through the viewport.
+
+Either because the user asked for it globally, or because the command
+was issued from a viewport buffer.  Mirrors `agent-shell--fork-shell-buffer'."
+  (or (and (boundp 'agent-shell-prefer-viewport-interaction)
+           agent-shell-prefer-viewport-interaction)
+      (agent-shell-side-compat-viewport-buffer-p)))
+
+(defun agent-shell-side-compat-show-in-viewport (shell-buffer)
+  "Show SHELL-BUFFER through a viewport, as `agent-shell-fork' would."
+  (unless (fboundp 'agent-shell-viewport--show-buffer)
+    (error "Missing agent-shell-viewport--show-buffer; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (agent-shell-viewport--show-buffer :shell-buffer shell-buffer))
+
+(defun agent-shell-side-compat-compose-in-viewport (shell-buffer text)
+  "Open SHELL-BUFFER's viewport compose buffer with TEXT appended, to be sent.
+
+Opens in edit mode even while the shell is busy, which is the point: the
+compose buffer is the one surface a viewport user can write in while a
+turn runs, and its send keys let them queue or steer what they wrote."
+  (unless (fboundp 'agent-shell-viewport--show-buffer)
+    (error "Missing agent-shell-viewport--show-buffer; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (agent-shell-viewport--show-buffer :shell-buffer shell-buffer
+                                     :append text
+                                     :edit t))
 
 (provide 'agent-shell-side-compat)
 

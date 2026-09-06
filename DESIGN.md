@@ -1,6 +1,6 @@
 # Design: open work for agent-shell-side
 
-Status as of 2026-08-25. `make check` is green (76 ERT tests against stubs)
+Status as of 2026-09-06. `make check` is green (99 ERT tests against stubs)
 and `make live-check` passes 10 of 10 against a real claude-agent-acp 0.70.
 
 Four questions were open when this was written. This document records the
@@ -178,6 +178,177 @@ concept but deleting the one-hop guard. The boundary prompt is already
 hop-agnostic: "everything before this boundary is inherited history ...
 reference context only" holds regardless of how many forks produced that
 history.
+
+## 5. Review of 2026-09-06
+
+A read of the package against agent-shell 0.75.2, Codex at 2df67054,
+Claude Code's `/btw`, and ChatGPT's branch feature. Six decisions, all
+Bill's, and what each changed.
+
+1. **Handback into a busy parent.** `agent-shell-insert` refuses while a
+   turn runs, so the summary was lost with an opaque subscriber error, and
+   the README promised the opposite. Decision: never send on the user's
+   behalf and never use the minibuffer, since a conclusion is long; insert
+   it where the user writes and let them send, queue, or steer. With
+   `agent-shell-prefer-viewport-interaction` that is the parent's compose
+   buffer, opened with `:edit t` so a busy parent still takes it. Otherwise
+   it is the shell prompt, which a busy shell cannot take:
+   `shell-maker--output-filter` inserts at `point-max`, so staged text
+   would be swallowed by the streaming response, which is why upstream
+   refuses. The parent prints its prompt and clears busy in
+   `shell-maker-finish-output` before emitting `turn-complete`, so the
+   findings wait for the first parent event that finds it idle, then land
+   at the prompt. The side conversation stays open, marked pending, until
+   then; a parent that closes first leaves it as it was.
+
+   A first cut queued through `agent-shell--prompt-queue-read` with the
+   summary prefilled in the minibuffer. Bill rejected it: the conclusion is
+   normally large, and the minibuffer is no place to review it.
+2. **A resumed side conversation was not one.** `agent-shell-side-resume`
+   never set the marker, so the buffer had no keys, no lighter, no place
+   in the listing, and could nest. Decision: mark it a side with no parent,
+   the shape an orphan already has. Marking is now `--mark-side`, shared
+   with `--link`.
+3. **Kept records were never removed.** `agent-shell-side-links-remove`
+   had no callers. Decision: consume the record on resume. That is the one
+   point the package knows it was used, and a later `keep` records it
+   afresh.
+4. **The parent's `systemPrompt.append` was dropped.** Decision: keep it
+   ahead of the side text, as Codex keeps its developer instructions. Not
+   a boundary-version bump: the side text is unchanged, and a stale mark
+   would claim two side policies apply when they do not.
+5. **Default disposal.** `ask` put a y-or-n-p on every close. Decision:
+   `delete`, matching Codex's ephemeral thread; `keep` is one customize
+   away.
+6. **Viewport.** `agent-shell--fork-shell-buffer` honours
+   `agent-shell-prefer-viewport-interaction` and a viewport origin; this
+   package always showed a raw shell. Decision: mirror it for display
+   only. The handback still lands in the parent's shell buffer.
+
+Without a decision: preconditions now run before the question is read,
+as Codex's `side_start_block_message` does; the parent-status echo needs
+the side buffer on screen; the dismiss prompt no longer names a `/side`
+command Emacs does not have; the test stub's `agent-shell-insert` refuses
+a busy target as the real one does, which is what had hidden item 1.
+
+Deferred, deliberately: a fork-at-point variant (`agent-shell-fork-at-point`
+exists upstream) and a `/btw`-style no-tools single-turn question. Both are
+new features, not fixes.
+
+## 6. Review of PR #1, 2026-09-06
+
+The review of the section 5 work found five defects, three of them
+introduced by that work and two in the paths it touched. All are fixed
+on the same branch.
+
+It took three rounds to get there. A review of the fixes found two of
+them wrong, one dangerously so; a review of *those* found the
+replacement for item 5 wrong again. Each wrong version is recorded in
+place below rather than as a separate list, since what matters is the
+fix that stands and why the obvious alternatives do not.
+
+One lesson runs through all of them: every wrong fix came from trusting
+an upstream event to mean what its name suggests. `session-selected`
+does not mean a session was loaded. `session-restored` does not mean a
+session came back. The only reliable move is to read the emission site
+and what runs either side of it.
+
+1. **Closing the side made the viewport handback unsendable.** The close
+   path re-displays the parent when it has no window, which under
+   viewport interaction is the normal state. That re-entered
+   `agent-shell-viewport--show-buffer` with nothing to append, taking the
+   branch that flips the compose buffer to read-only view mode. The
+   findings landed and were immediately stranded. The draft is not
+   snapshotted on that transition; the only snapshot write in that file
+   guards history-ring navigation. Fix: `--close` takes a `parent-shown`
+   argument, set by the handback when delivery already put the parent in
+   front of the user.
+
+   The first test for this passed against the unfixed code twice over:
+   once because the parent still owned a window in the test, and once
+   because the shared conclude helper stubbed `--display` out entirely.
+   Both are now explicit in the test.
+
+2. **The side commands were unreachable from a viewport.** The mode was
+   enabled on the shell buffer only, and viewport users sit in the
+   viewport buffer. Fix: `--this-shell` resolves a viewport buffer to its
+   shell, and every command, plus the lighter, reads through it.
+
+   The first attempt also mirrored the minor mode onto the viewport
+   buffer, to bind the keys there. That was wrong, and worse than the bug
+   it fixed. `agent-shell-viewport-edit-mode-map` already binds `C-c C-k`
+   to discard the draft and `C-c C-q` to queue it, and a minor-mode map
+   outranks a major-mode one, so mirroring turned cancelling a draft into
+   deleting a forked session. It also did not survive: the mode is not
+   `permanent-local`, and the viewport changes major mode in place on
+   every send, so the keys vanished after the first one anyway. The mode
+   is now never enabled in a viewport buffer, and the README says to use
+   `M-x` or bind the commands yourself.
+
+   `--this-shell` also guards its result. `agent-shell-shell-buffer` falls
+   back to the first shell in the project when a viewport cannot be
+   matched to its own shell, which a renamed shell buffer causes, so the
+   resolved shell is accepted only when it really is one end of a side
+   conversation.
+
+3. **An errored parent turn stranded the findings forever.** `error` is
+   emitted before the shell clears its busy state, which upstream states
+   in a comment at `agent-shell.el:7442`, and nothing follows it. The
+   idle test therefore never fired and `conclude` refused from then on.
+   Fix: on `error`, defer the test to the next timer tick, since the
+   clearing happens in the same call right after the event is dispatched.
+
+4. **The README described a mode-line marker that did not exist.** The
+   pending flag was read only by the `conclude` guard. Fixed by building
+   it: the lighter now reads " Side:findings waiting", and pending
+   outranks parent status, which would otherwise say the same thing twice.
+
+5. **Resume dropped the record before the session was known to load.**
+   `session/load` is still in flight at that point, so an agent that
+   rejected it left a shell talking to nothing and no record to retry
+   from.
+
+   The first attempt keyed off `session-selected` and kept the record on
+   `error`. Both halves were wrong. `session-selected` is emitted *before*
+   the load request is sent (`agent-shell.el:8146`), so it dropped the
+   record just as early as before. And a rejected load never emits
+   `error`: its `:on-failure` (`agent-shell.el:8827`) says "Couldn't
+   resume session. Starting a new one." and falls back to loading a
+   different one, so the `error` branch was dead code for the case it was
+   written for.
+
+   The second attempt keyed off `session-restored`, which was wrong in
+   the opposite direction. That event does not mean "the session came
+   back"; it means a buffered transcript was replayed, and the buffering
+   only happens when `agent-shell-session-restore-verbosity` asks for one
+   (`agent-shell.el:8789`, guarded by `--has-pending-restore-p`).
+
+   Its default is `minimal`, which for this package's primary agent means
+   nothing is ever buffered and the event never fires. Note the condition
+   rather than just the default, because it is narrower than it looks:
+   `agent-shell--effective-restore-verbosity` (`agent-shell.el:8566`)
+   promotes `minimal` to `first-last` for an agent that can load a session
+   but not resume one, and `session-restored` does fire for those.
+   claude-agent-acp advertises `resume`, so it is in the group where the
+   event never arrives. Worse than the original bug: the
+   next resume would offer a session already deleted, and agent-shell
+   answers a rejected load by quietly loading a different one, which this
+   package would then mark as the side conversation. The user would
+   silently get the wrong conversation.
+
+   What holds is `prompt-ready`. It is emitted when the init pipeline
+   finishes (`agent-shell.el:2561`) on every path -- a load that worked,
+   a load that failed and fell back, a plain new session -- and always
+   after the session id is written into the shell's state
+   (`agent-shell.el:8810`, before `--finalize-session-init`). Since a
+   rejected load is never surfaced as an error, the id is compared rather
+   than the event trusted: a shell that came back as anything else keeps
+   its record.
+
+   The test for this was wrong too, in a way worth naming. It set the
+   package's own session-id cache, which only the fork path ever fills; a
+   resumed shell reads its id from agent-shell's state. The test was
+   passing against a source the real path never uses.
 
 ## Order of work
 

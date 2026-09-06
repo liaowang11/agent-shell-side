@@ -40,13 +40,53 @@
 
 (defvar agent-shell-display-action '(display-buffer-same-window))
 
+(defvar agent-shell-prefer-viewport-interaction nil)
+
+(define-derived-mode agent-shell-viewport-view-mode text-mode "Viewport (View)")
+(define-derived-mode agent-shell-viewport-edit-mode text-mode "Viewport (Edit)")
+
+(defvar agent-shell-test-viewport-shown nil
+  "Shell buffers passed to `agent-shell-viewport--show-buffer', newest first.")
+
+(defvar agent-shell-test-viewport-calls nil
+  "Full keyword arguments of each `agent-shell-viewport--show-buffer' call.")
+
+(defvar-local agent-shell-test-viewport-shell nil
+  "In a stub viewport buffer, the shell buffer it stands for.")
+(put 'agent-shell-test-viewport-shell 'permanent-local t)
+
+(cl-defun agent-shell-viewport--buffer (&key shell-buffer existing-only)
+  "Return the stub viewport buffer for SHELL-BUFFER, if one exists."
+  (ignore existing-only)
+  (seq-find (lambda (buffer)
+              (eq (buffer-local-value 'agent-shell-test-viewport-shell buffer)
+                  shell-buffer))
+            (buffer-list)))
+
+(cl-defun agent-shell-viewport--show-buffer (&rest args &key shell-buffer &allow-other-keys)
+  "Record a viewport display, creating the stub viewport buffer on demand."
+  (push shell-buffer agent-shell-test-viewport-shown)
+  (push args agent-shell-test-viewport-calls)
+  (or (agent-shell-viewport--buffer :shell-buffer shell-buffer)
+      (let ((buffer (generate-new-buffer " *agent-shell side test viewport*")))
+        (with-current-buffer buffer
+          (agent-shell-viewport-edit-mode)
+          (setq-local agent-shell-test-viewport-shell shell-buffer))
+        buffer)))
+
 (cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
-  "Record an insertion instead of touching a shell."
-  (push (list (cons :text text)
-              (cons :submit submit)
-              (cons :no-focus no-focus)
-              (cons :shell-buffer (or shell-buffer (current-buffer))))
-        agent-shell-test-inserted)
+  "Record an insertion instead of touching a shell.
+
+Refuses when the target is busy, as the real one does
+\(`agent-shell--insert-to-shell-buffer' signals \"Busy, try later\")."
+  (let ((target (or shell-buffer (current-buffer))))
+    (when (memq (agent-shell-status :shell-buffer target) '(busy blocked))
+      (user-error "Busy, try later"))
+    (push (list (cons :text text)
+                (cons :submit submit)
+                (cons :no-focus no-focus)
+                (cons :shell-buffer target))
+          agent-shell-test-inserted))
   nil)
 
 (defun agent-shell-cwd ()
@@ -54,21 +94,28 @@
   default-directory)
 
 (cl-defun agent-shell-shell-buffer (&key viewport-buffer no-error no-create)
-  "Return the current buffer when it is a shell."
-  (ignore viewport-buffer no-create)
-  (if (derived-mode-p 'agent-shell-mode)
-      (current-buffer)
-    (unless no-error
-      (user-error "Not in a shell"))))
+  "Return the shell buffer for VIEWPORT-BUFFER, or for the current buffer.
+
+Resolves a viewport buffer to the shell it stands for, as the real one
+does, so a command run from a viewport reaches the right shell."
+  (ignore no-create)
+  (let ((buffer (or viewport-buffer (current-buffer))))
+    (cond
+     ((buffer-local-value 'agent-shell-test-viewport-shell buffer))
+     ((with-current-buffer buffer (derived-mode-p 'agent-shell-mode)) buffer)
+     (no-error nil)
+     (t (user-error "Not in a shell")))))
 
 (defun agent-shell-get-config (buffer)
   "Return BUFFER's agent config."
   (map-elt (buffer-local-value 'agent-shell--state buffer) :agent-config))
 
 (cl-defun agent-shell-status (&key shell-buffer)
-  "Return the stubbed status."
-  (ignore shell-buffer)
-  agent-shell-test-status)
+  "Return the stubbed status of SHELL-BUFFER, or of the current buffer.
+
+`agent-shell-test-status' may be set buffer-locally so that a parent and
+its side conversation can differ."
+  (buffer-local-value 'agent-shell-test-status (or shell-buffer (current-buffer))))
 
 (defun agent-shell-interrupt (&optional _force)
   "Record that an interrupt was requested."
