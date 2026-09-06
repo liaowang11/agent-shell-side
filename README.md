@@ -163,9 +163,14 @@ is recorded afresh.
 
 With `agent-shell-prefer-viewport-interaction` set, or when started from a
 viewport buffer, the side conversation opens through a viewport as
-`agent-shell-fork` would, and the keys above work from that compose buffer too.
-The handback then goes to the parent's own compose buffer rather than its shell
-prompt.
+`agent-shell-fork` would, and the handback goes to the parent's own compose
+buffer rather than its shell prompt.
+
+The keys above are deliberately *not* bound in a viewport compose buffer.
+`agent-shell-viewport-edit-mode` already uses `C-c C-k` to discard the draft and
+`C-c C-q` to queue it, and a minor mode would outrank both, so cancelling a
+draft would delete a forked session instead. The commands still work there by
+name, under `M-x`, and you can bind them to keys of your own.
 
 ## agent-shell internals
 

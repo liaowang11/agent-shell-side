@@ -1150,6 +1150,13 @@ keeps the real one, for the tests that are about display itself."
                           (null (nth 1 subscription))))
                    agent-shell-test-subscriptions)))
 
+(defun agent-shell-side-tests--restored-handler (buffer)
+  "Return the handler subscribed to BUFFER's `session-restored' event."
+  (nth 2 (seq-find (lambda (subscription)
+                     (and (eq (nth 0 subscription) buffer)
+                          (eq (nth 1 subscription) 'session-restored)))
+                   agent-shell-test-subscriptions)))
+
 (defun agent-shell-side-tests--viewport-for (shell)
   "Return the stub viewport buffer standing for SHELL."
   (agent-shell-viewport--buffer :shell-buffer shell))
@@ -1300,23 +1307,30 @@ keep offering it after it is deleted."
   (agent-shell-side-tests--with-resumable-record
     (agent-shell-side-tests--silently (agent-shell-side-resume))
     (let ((resumed (current-buffer)))
+      ;; `session-selected' is emitted before the load is even sent, so it
+      ;; must not be the signal that drops the record.
       (should (agent-shell-side-links-read))
-      (funcall (agent-shell-side-tests--any-handler resumed)
-               '((:event . session-selected)
-                 (:data . ((:session-id . "side-9")))))
+      (with-current-buffer resumed
+        (setq agent-shell-side--session-id-cache "side-9"))
+      (funcall (agent-shell-side-tests--restored-handler resumed)
+               '((:event . session-restored)))
       (should-not (agent-shell-side-links-read)))))
 
 (ert-deftest agent-shell-side-test-resume-keeps-the-record-when-load-fails ()
   "A resume the agent rejects keeps its record.
 
-Dropping it at start time would leave a shell talking to nothing and no
-record of the session id to try again with."
+A rejected load is not reported as an error to watch for: agent-shell
+says so and quietly starts a different session, which can itself emit
+`session-restored'.  So a restore carrying any other session id must
+leave the record alone."
   (agent-shell-side-tests--with-resumable-record
     (agent-shell-side-tests--silently (agent-shell-side-resume))
     (let ((resumed (current-buffer)))
+      (with-current-buffer resumed
+        (setq agent-shell-side--session-id-cache "some-other-session"))
       (agent-shell-side-tests--silently
-        (funcall (agent-shell-side-tests--any-handler resumed)
-                 '((:event . error) (:data . ((:message . "no such session"))))))
+        (funcall (agent-shell-side-tests--restored-handler resumed)
+                 '((:event . session-restored))))
       (should (agent-shell-side-links-read)))))
 
 (ert-deftest agent-shell-side-test-resume-refuses-nesting ()
@@ -1409,19 +1423,37 @@ it had none."
       (should-not (buffer-live-p side))
       (should (get-buffer-window parent)))))
 
-(ert-deftest agent-shell-side-test-viewport-buffer-carries-the-side-keys ()
-  "A side opened in a viewport binds its keys where the user actually is."
+(ert-deftest agent-shell-side-test-viewport-buffer-keeps-its-own-keys ()
+  "The side mode is never turned on in a viewport buffer.
+
+`agent-shell-viewport-edit-mode-map' binds C-c C-k to discard the draft
+and C-c C-q to queue it.  A minor mode outranks a major-mode map, so
+turning this one on there would make cancelling a draft delete a forked
+session.  The commands still reach the shell, by name."
   (agent-shell-side-tests--with-parent
     (let* ((agent-shell-prefer-viewport-interaction t)
            (side (with-current-buffer parent (agent-shell-side)))
            (viewport (agent-shell-side-tests--viewport-for side)))
       (should viewport)
-      (should (buffer-local-value 'agent-shell-side-mode viewport))
+      (should-not (buffer-local-value 'agent-shell-side-mode viewport))
       (with-current-buffer viewport
-        (should (eq (key-binding (kbd "C-c C-k")) #'agent-shell-side-dismiss))
-        ;; And the commands resolve through to the shell behind it.
-        (should (eq (agent-shell-side--resolve-side) side))
-        (should (string-prefix-p " Side" (agent-shell-side--lighter)))))))
+        (should (eq (agent-shell-side--resolve-side) side))))))
+
+(ert-deftest agent-shell-side-test-viewport-of-an-unrelated-shell-is-refused ()
+  "A viewport whose shell is no side conversation resolves to nothing.
+
+`agent-shell-shell-buffer' falls back to the first shell in the project
+when a viewport cannot be matched to its own shell, and acting on an
+unrelated conversation is worse than refusing."
+  (agent-shell-side-tests--with-parent
+    (let ((stranger (generate-new-buffer " *agent-shell side test stranger*"))
+          (viewport (generate-new-buffer " *agent-shell side test viewport*")))
+      (with-current-buffer stranger (agent-shell-mode))
+      (with-current-buffer viewport
+        (agent-shell-viewport-edit-mode)
+        (setq-local agent-shell-test-viewport-shell stranger)
+        (should (eq (agent-shell-side--this-shell) viewport))
+        (should-error (agent-shell-side--resolve-side) :type 'user-error)))))
 
 (ert-deftest agent-shell-side-test-conclude-from-the-viewport-buffer ()
   "Concluding works when run from the side's viewport buffer."

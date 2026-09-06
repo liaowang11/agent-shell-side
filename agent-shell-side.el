@@ -537,16 +537,33 @@ selected, an error is an ordinary failed request and the shell keeps it."
 (defun agent-shell-side--this-shell ()
   "Return the shell buffer this buffer speaks for.
 
-A viewport buffer stands for the shell behind it, so a command or lighter
-run there acts on that shell rather than on the viewport.  Resolution is
-deliberately narrow: only a viewport is looked up, and only through its
-own shell.  `agent-shell-shell-buffer' can otherwise fall back to asking
-the user which shell to use, and this runs from a mode-line lighter,
-where a prompt would be intolerable."
+A viewport buffer stands for the shell behind it, so a command run there
+acts on that shell rather than on the viewport.  This is what makes
+`agent-shell-side-conclude' and its siblings work from a compose buffer,
+which is where a viewport user sits.
+
+The side keys are deliberately *not* bound in a viewport buffer.
+`agent-shell-viewport-edit-mode-map' already gives the same two keys to
+discarding and to queueing a draft, and a minor mode would outrank both.
+Taking them over would turn cancelling a draft into deleting a forked
+session.  Use \[execute-extended-command] there, or bind the side
+commands to keys of your own choosing.
+
+`:no-create t' rules out the branch that would ask the user which shell
+to use, so this stays safe to call from a mode-line lighter."
   (or (and (agent-shell-side-compat-viewport-buffer-p)
-           (ignore-errors
-             (agent-shell-shell-buffer :viewport-buffer (current-buffer)
-                                       :no-error t :no-create t)))
+           (when-let* ((shell (ignore-errors
+                                (agent-shell-shell-buffer
+                                 :viewport-buffer (current-buffer)
+                                 :no-error t :no-create t))))
+             ;; Only when that shell really is one end of a side
+             ;; conversation.  `agent-shell-shell-buffer' falls back to the
+             ;; first shell in the project when a viewport cannot be matched
+             ;; to its own shell, which a renamed shell buffer causes, and
+             ;; acting on an unrelated conversation is worse than refusing.
+             (and (or (agent-shell-side-buffer-p shell)
+                      (buffer-local-value 'agent-shell-side--side-buffer shell))
+                  shell)))
       (current-buffer)))
 
 (defun agent-shell-side--lighter-string (role status &optional pending)
@@ -755,19 +772,6 @@ one works."
       (with-current-buffer shell-buffer
         (and (ignore-errors (shell-maker-history)) t))))
 
-(defun agent-shell-side--mirror-mode-to-viewport (shell-buffer)
-  "Turn `agent-shell-side-mode' on in SHELL-BUFFER's viewport buffer.
-
-The mode carries the keys, and under viewport interaction the user sits
-in the viewport buffer rather than the shell, so binding them only on
-the shell would put them out of reach.  Everything the mode reads is
-resolved through `agent-shell-side--this-shell', so the lighter and the
-commands report the shell's state from either buffer."
-  (when (buffer-local-value 'agent-shell-side-mode shell-buffer)
-    (when-let* ((viewport (agent-shell-side-compat-existing-viewport shell-buffer)))
-      (with-current-buffer viewport
-        (agent-shell-side-mode 1)))))
-
 (defun agent-shell-side--forkable-parent ()
   "Return the shell buffer a side conversation can be forked from now.
 
@@ -795,9 +799,7 @@ Otherwise it honors `agent-shell-display-action' rather than picking a
 window directly, so a side conversation lands where the user already
 told `agent-shell' to put shells."
   (if (or viewport (agent-shell-side-compat-prefer-viewport-p))
-      (progn
-        (agent-shell-side-compat-show-in-viewport buffer)
-        (agent-shell-side--mirror-mode-to-viewport buffer))
+      (agent-shell-side-compat-show-in-viewport buffer)
     (when-let* ((window (display-buffer buffer agent-shell-display-action)))
       (select-window window))))
 
@@ -1147,7 +1149,6 @@ so a session is never offered twice, nor after it has been deleted."
                            :session-id (map-elt record :side-session-id))))
         (when (buffer-live-p side-buffer)
           (agent-shell-side--mark-side side-buffer)
-          (agent-shell-side--mirror-mode-to-viewport side-buffer)
           (agent-shell-side--forget-record-when-loaded
            side-buffer (map-elt record :side-session-id)))
         side-buffer))))
@@ -1155,31 +1156,34 @@ so a session is never offered twice, nor after it has been deleted."
 (defun agent-shell-side--forget-record-when-loaded (side-buffer session-id)
   "Drop SESSION-ID's link record once SIDE-BUFFER has really loaded it.
 
-Dropping it at the point the shell is started would be too early: the
-`session/load' is still in flight, and an agent that rejects it would
-leave a shell talking to nothing and no record of the session id to try
-again with.  A rejected load keeps the record, so the conversation can
-still be resumed once whatever refused it is fixed."
+Dropping it when the shell is started would be too early: `session/load'
+is still in flight, and an agent that rejects it would leave no record of
+the session id to try again with.
+
+`session-selected' is too early for the same reason -- it is emitted
+before the load request is even sent.  `session-restored' is the one that
+means the transcript came back and the shell has settled.
+
+A rejected load is not reported as an error to watch for: `agent-shell'
+answers it by saying so and quietly starting a different session, which
+can itself emit `session-restored'.  So the id is checked rather than the
+event trusted, and a restore of anything else leaves the record alone."
   (let ((token nil)
         (settled nil))
     (setq token
           (agent-shell-subscribe-to
            :shell-buffer side-buffer
+           :event 'session-restored
            :on-event
-           (lambda (event)
+           (lambda (_event)
              (unless settled
-               (pcase (map-elt event :event)
-                 ('session-selected
-                  (setq settled t)
-                  (agent-shell-side--unsubscribe side-buffer token)
-                  (agent-shell-side-links-remove session-id))
-                 ('error
-                  (setq settled t)
-                  (agent-shell-side--unsubscribe side-buffer token)
-                  (message
-                   "agent-shell-side: could not resume %s; keeping its record"
-                   session-id))
-                 (_ nil))))))
+               (setq settled t)
+               (agent-shell-side--unsubscribe side-buffer token)
+               (if (equal (agent-shell-side--session-id side-buffer) session-id)
+                   (agent-shell-side-links-remove session-id)
+                 (message
+                  "agent-shell-side: %s did not come back; keeping its record"
+                  session-id))))))
     token))
 
 (defun agent-shell-side--record-label (record)

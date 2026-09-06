@@ -241,6 +241,13 @@ The review of the section 5 work found five defects, three of them
 introduced by that work and two in the paths it touched. All are fixed
 on the same branch.
 
+A second review of those fixes found that two of them were themselves
+wrong, one dangerously so. Both are recorded in place below rather than
+as a separate list, since what matters is the fix that stands. The
+lesson worth keeping: every wrong fix here came from assuming an
+upstream event meant what its name suggested, instead of reading where
+it is emitted.
+
 1. **Closing the side made the viewport handback unsendable.** The close
    path re-displays the parent when it has no window, which under
    viewport interaction is the normal state. That re-entered
@@ -257,15 +264,27 @@ on the same branch.
    because the shared conclude helper stubbed `--display` out entirely.
    Both are now explicit in the test.
 
-2. **The side keys were unreachable from a viewport.** The mode was
+2. **The side commands were unreachable from a viewport.** The mode was
    enabled on the shell buffer only, and viewport users sit in the
    viewport buffer. Fix: `--this-shell` resolves a viewport buffer to its
-   shell, and every command, plus the lighter, reads through it. The mode
-   is also mirrored onto the viewport buffer so the keys bind there.
-   Resolution is deliberately narrow rather than a call to
-   `agent-shell-shell-buffer`, which can fall back to asking the user
-   which shell to use; the lighter runs on redisplay, where a prompt
-   would be intolerable.
+   shell, and every command, plus the lighter, reads through it.
+
+   The first attempt also mirrored the minor mode onto the viewport
+   buffer, to bind the keys there. That was wrong, and worse than the bug
+   it fixed. `agent-shell-viewport-edit-mode-map` already binds `C-c C-k`
+   to discard the draft and `C-c C-q` to queue it, and a minor-mode map
+   outranks a major-mode one, so mirroring turned cancelling a draft into
+   deleting a forked session. It also did not survive: the mode is not
+   `permanent-local`, and the viewport changes major mode in place on
+   every send, so the keys vanished after the first one anyway. The mode
+   is now never enabled in a viewport buffer, and the README says to use
+   `M-x` or bind the commands yourself.
+
+   `--this-shell` also guards its result. `agent-shell-shell-buffer` falls
+   back to the first shell in the project when a viewport cannot be
+   matched to its own shell, which a renamed shell buffer causes, so the
+   resolved shell is accepted only when it really is one end of a side
+   conversation.
 
 3. **An errored parent turn stranded the findings forever.** `error` is
    emitted before the shell clears its busy state, which upstream states
@@ -282,8 +301,22 @@ on the same branch.
 5. **Resume dropped the record before the session was known to load.**
    `session/load` is still in flight at that point, so an agent that
    rejected it left a shell talking to nothing and no record to retry
-   from. Fix: the record is dropped on `session-selected` and kept on
-   `error`.
+   from.
+
+   The first attempt keyed off `session-selected` and kept the record on
+   `error`. Both halves were wrong. `session-selected` is emitted *before*
+   the load request is sent (`agent-shell.el:8146`), so it dropped the
+   record just as early as before. And a rejected load never emits
+   `error`: its `:on-failure` (`agent-shell.el:8827`) says "Couldn't
+   resume session. Starting a new one." and falls back to loading a
+   different one, so the `error` branch was dead code for the case it was
+   written for.
+
+   The signal that actually means the transcript came back is
+   `session-restored`, emitted once the shell has settled
+   (`agent-shell.el:8768`). Because the failure path can itself restore a
+   *different* session, the record is dropped only when the shell's
+   session id matches the record's.
 
 ## Order of work
 
