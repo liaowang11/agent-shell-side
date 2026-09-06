@@ -1,6 +1,6 @@
 # Design: open work for agent-shell-side
 
-Status as of 2026-08-25. `make check` is green (76 ERT tests against stubs)
+Status as of 2026-09-06. `make check` is green (91 ERT tests against stubs)
 and `make live-check` passes 10 of 10 against a real claude-agent-acp 0.70.
 
 Four questions were open when this was written. This document records the
@@ -178,6 +178,53 @@ concept but deleting the one-hop guard. The boundary prompt is already
 hop-agnostic: "everything before this boundary is inherited history ...
 reference context only" holds regardless of how many forks produced that
 history.
+
+## 5. Review of 2026-09-06
+
+A read of the package against agent-shell 0.75.2, Codex at 2df67054,
+Claude Code's `/btw`, and ChatGPT's branch feature. Six decisions, all
+Bill's, and what each changed.
+
+1. **Handback into a busy parent.** `agent-shell-insert` refuses while a
+   turn runs, so the summary was lost with an opaque subscriber error, and
+   the README promised the opposite. Decision: queue, never send directly,
+   and let the user add prompting. The summary is offered in the minibuffer
+   prefilled (`agent-shell--prompt-queue-read`), then queued with an
+   explicit `queue` disposition so `agent-shell-prompt-while-busy`'s
+   default of steering cannot replace the parent's work. If the parent
+   finishes while the user types, the text is staged instead, since a
+   queue submits at once to an idle shell. Quitting delivers nothing and
+   leaves the side conversation open.
+2. **A resumed side conversation was not one.** `agent-shell-side-resume`
+   never set the marker, so the buffer had no keys, no lighter, no place
+   in the listing, and could nest. Decision: mark it a side with no parent,
+   the shape an orphan already has. Marking is now `--mark-side`, shared
+   with `--link`.
+3. **Kept records were never removed.** `agent-shell-side-links-remove`
+   had no callers. Decision: consume the record on resume. That is the one
+   point the package knows it was used, and a later `keep` records it
+   afresh.
+4. **The parent's `systemPrompt.append` was dropped.** Decision: keep it
+   ahead of the side text, as Codex keeps its developer instructions. Not
+   a boundary-version bump: the side text is unchanged, and a stale mark
+   would claim two side policies apply when they do not.
+5. **Default disposal.** `ask` put a y-or-n-p on every close. Decision:
+   `delete`, matching Codex's ephemeral thread; `keep` is one customize
+   away.
+6. **Viewport.** `agent-shell--fork-shell-buffer` honours
+   `agent-shell-prefer-viewport-interaction` and a viewport origin; this
+   package always showed a raw shell. Decision: mirror it for display
+   only. The handback still lands in the parent's shell buffer.
+
+Without a decision: preconditions now run before the question is read,
+as Codex's `side_start_block_message` does; the parent-status echo needs
+the side buffer on screen; the dismiss prompt no longer names a `/side`
+command Emacs does not have; the test stub's `agent-shell-insert` refuses
+a busy target as the real one does, which is what had hidden item 1.
+
+Deferred, deliberately: a fork-at-point variant (`agent-shell-fork-at-point`
+exists upstream) and a `/btw`-style no-tools single-turn question. Both are
+new features, not fixes.
 
 ## Order of work
 

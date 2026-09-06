@@ -40,13 +40,54 @@
 
 (defvar agent-shell-display-action '(display-buffer-same-window))
 
+(defvar agent-shell-prefer-viewport-interaction nil)
+
+(define-derived-mode agent-shell-viewport-view-mode text-mode "Viewport (View)")
+(define-derived-mode agent-shell-viewport-edit-mode text-mode "Viewport (Edit)")
+
+(defvar agent-shell-test-viewport-shown nil
+  "Shell buffers passed to `agent-shell-viewport--show-buffer', newest first.")
+
+(cl-defun agent-shell-viewport--show-buffer (&key shell-buffer &allow-other-keys)
+  "Record a viewport display instead of opening one."
+  (push shell-buffer agent-shell-test-viewport-shown)
+  nil)
+
+(defvar agent-shell-test-queued nil
+  "Calls to `agent-shell--prompt-send', newest first, as alists.")
+
+(defvar agent-shell-test-queue-read-suffix " and then?"
+  "Text the stubbed minibuffer read appends to its initial contents.
+
+Nil makes the read signal `quit', as a user pressing \`C-g' would.")
+
+(cl-defun agent-shell--prompt-queue-read (&key initial)
+  "Return INITIAL with the user's stubbed addition, or quit."
+  (unless agent-shell-test-queue-read-suffix
+    (signal 'quit nil))
+  (concat initial agent-shell-test-queue-read-suffix))
+
+(cl-defun agent-shell--prompt-send (&key prompt disposition on-delivered)
+  "Record a prompt handed to the queue in the current buffer."
+  (ignore on-delivered)
+  (push (list (cons :prompt prompt)
+              (cons :disposition disposition)
+              (cons :shell-buffer (current-buffer)))
+        agent-shell-test-queued))
+
 (cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
-  "Record an insertion instead of touching a shell."
-  (push (list (cons :text text)
-              (cons :submit submit)
-              (cons :no-focus no-focus)
-              (cons :shell-buffer (or shell-buffer (current-buffer))))
-        agent-shell-test-inserted)
+  "Record an insertion instead of touching a shell.
+
+Refuses when the target is busy, as the real one does
+\(`agent-shell--insert-to-shell-buffer' signals \"Busy, try later\")."
+  (let ((target (or shell-buffer (current-buffer))))
+    (when (memq (agent-shell-status :shell-buffer target) '(busy blocked))
+      (user-error "Busy, try later"))
+    (push (list (cons :text text)
+                (cons :submit submit)
+                (cons :no-focus no-focus)
+                (cons :shell-buffer target))
+          agent-shell-test-inserted))
   nil)
 
 (defun agent-shell-cwd ()
@@ -66,9 +107,11 @@
   (map-elt (buffer-local-value 'agent-shell--state buffer) :agent-config))
 
 (cl-defun agent-shell-status (&key shell-buffer)
-  "Return the stubbed status."
-  (ignore shell-buffer)
-  agent-shell-test-status)
+  "Return the stubbed status of SHELL-BUFFER, or of the current buffer.
+
+`agent-shell-test-status' may be set buffer-locally so that a parent and
+its side conversation can differ."
+  (buffer-local-value 'agent-shell-test-status (or shell-buffer (current-buffer))))
 
 (defun agent-shell-interrupt (&optional _force)
   "Record that an interrupt was requested."

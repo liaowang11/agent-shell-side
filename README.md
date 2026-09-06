@@ -48,10 +48,15 @@ An empty question opens it blank.
 
 `agent-shell-side-conclude` (`C-c C-q`) asks the side conversation for a summary
 addressed to the parent, waits for it, puts it at the parent's prompt, and closes
-the side conversation. The summary is left for you to review rather than sent,
-because the parent may be mid-turn and dropping an unread block into a working
-conversation is the disruption a side conversation exists to avoid. Set
-`agent-shell-side-handback-submit` to send it instead.
+the side conversation. The summary is left for you to review rather than sent.
+Set `agent-shell-side-handback-submit` to send it instead.
+
+A parent that is mid-turn cannot take text at its prompt. The summary is then
+offered in the minibuffer, prefilled, for you to add your own prompting, and
+queued to start the parent's next turn when the current one ends. It is queued,
+never steered: a steer can replace what the parent is doing, which is the
+disruption a side conversation exists to avoid. Quit the minibuffer and the side
+conversation stays open with nothing sent.
 
 If the summary comes back empty, or the parent is gone, the side conversation is
 left open rather than closed on nothing. Customize
@@ -59,8 +64,9 @@ left open rather than closed on nothing. Customize
 
 While you are in the side conversation, the parent keeps running. When it
 finishes, fails, or asks for approval, the side conversation's mode line says so
-(` Side:main needs approval`) and echoes it once. Set
-`agent-shell-side-report-parent-status` to nil for the mode line only.
+(` Side:main needs approval`) and, while the side conversation is on screen,
+echoes it once. Set `agent-shell-side-report-parent-status` to nil for the mode
+line only.
 
 ### Keeping track of what is open
 
@@ -88,7 +94,10 @@ agent:
    carries the policy.
 2. **`_meta.systemPrompt.append`** on the fork request, restating the policy at
    system level. Honored by claude-agent-acp; other adapters ignore unknown
-   `_meta` keys, which is what `_meta` is for.
+   `_meta` keys, which is what `_meta` is for. An `append` your own agent config
+   already carries is kept ahead of the side text, as Codex keeps its existing
+   developer instructions: that is your configuration, not a convention of the
+   parent conversation.
 
 Neither is a sandbox. Like Codex's version, the restriction is instruction text
 the agent is asked to follow. The full text is in
@@ -125,10 +134,12 @@ conversation that silently lost its inherited history is worse than an error.
 ACP has no ephemeral session, so a fork always leaves one behind in the agent's
 own store. `agent-shell-side-on-dismiss` decides what to do when you close one:
 
-- `delete` — ask the agent to drop it (`session/delete`).
+- `delete` (the default) — ask the agent to drop it (`session/delete`). A side
+  conversation is meant to be ephemeral, as Codex's is, and a question on every
+  close is friction on the common path.
 - `keep` — leave it, and record it in `agent-shell-side-links-file` so
   `agent-shell-side-resume` can find it again.
-- `ask` (the default) — ask each time.
+- `ask` — ask each time.
 
 A kept session is recorded as which fork belonged to which parent, with the
 agent identifier and working directory. The identifier matters: resuming
@@ -140,14 +151,27 @@ Records also carry a boundary version. A record written under older instruction
 text is still resumable, but says so, since both texts then apply to that
 conversation.
 
+A resumed side conversation is a side conversation again, with the same keys,
+lighter, and place in `agent-shell-side-list`, but it stands on its own: nothing
+records which buffer its parent was, so there is nothing to toggle to or hand
+findings back to. Resuming consumes the record, so a session is never offered
+twice, nor after it has been deleted. Close the resumed one with `keep` and it
+is recorded afresh.
+
+With `agent-shell-prefer-viewport-interaction` set, or when started from a
+viewport buffer, the side conversation opens through a viewport as
+`agent-shell-fork` would. The handback still lands in the parent's shell buffer.
+
 ## agent-shell internals
 
 Three things this package needs are not in `agent-shell`'s public API: starting
 a shell that forks a session with a caller-supplied config, reading whether the
-agent advertised `session/fork`, and reading the current session id. All three
-live in `agent-shell-side-compat.el` so an upstream change breaks one file. Each
-shim checks what it needs and names the missing piece rather than failing deeper
-in.
+agent advertised `session/fork`, and reading the current session id. Two more
+are borrowed for the user's sake: the prompt queue, so findings can reach a busy
+parent, and the viewport, so a side conversation opens where a viewport user
+looks. All of them live in `agent-shell-side-compat.el` so an upstream change
+breaks one file. Each shim checks what it needs and names the missing piece
+rather than failing deeper in.
 
 Everything else uses public API: `agent-shell-start`, `agent-shell-get-config`,
 `agent-shell-shell-buffer`, `agent-shell-subscribe-to`, `agent-shell-status`,

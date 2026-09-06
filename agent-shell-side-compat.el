@@ -28,6 +28,11 @@
 ;;    the kill ring.  `agent-shell-side' prefers the id it captured from
 ;;    the public `session-selected' event and falls back to this.
 ;;
+;; Two more are borrowed for the user's sake rather than out of need:
+;; the prompt queue, so findings can reach a busy parent the way
+;; `agent-shell-prompt-queue' would take them, and the viewport, so a
+;; side conversation opens where a viewport user actually looks.
+;;
 ;; Each shim checks for what it needs and signals a message naming the
 ;; missing piece, rather than failing somewhere deeper.
 
@@ -37,8 +42,12 @@
 (eval-when-compile (require 'cl-lib))
 
 (declare-function agent-shell--start "agent-shell")
+(declare-function agent-shell--prompt-queue-read "agent-shell-prompt-queue")
+(declare-function agent-shell--prompt-send "agent-shell-prompt-queue")
+(declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
 
 (defvar agent-shell--state)
+(defvar agent-shell-prefer-viewport-interaction)
 
 (defconst agent-shell-side-compat--upgrade-hint
   "agent-shell-side needs agent-shell 0.74 or newer"
@@ -65,7 +74,7 @@ The capability is recorded at `initialize' from
 `agentCapabilities.sessionCapabilities.fork'."
   (let ((state (agent-shell-side-compat--state shell-buffer)))
     (unless (assq :supports-session-fork state)
-      (error "agent-shell does not track session/fork support; %s"
+      (error "Cannot read session/fork support from agent-shell; %s"
              agent-shell-side-compat--upgrade-hint))
     (and (map-elt state :supports-session-fork) t)))
 
@@ -105,7 +114,7 @@ The keyword is not checked before the call: `agent-shell--start' is a
 an unknown keyword itself, and that error is re-raised here with the
 version it points to."
   (unless (fboundp 'agent-shell--start)
-    (error "agent-shell--start is missing; %s"
+    (error "Missing agent-shell--start; %s"
            agent-shell-side-compat--upgrade-hint))
   (condition-case err
       (agent-shell--start :config config
@@ -116,9 +125,53 @@ version it points to."
                           :outgoing-request-decorator outgoing-request-decorator)
     (error
      (if (string-match-p "fork-session-id" (error-message-string err))
-         (error "agent-shell--start no longer accepts :fork-session-id; %s"
+         (error "Rejected :fork-session-id in agent-shell--start; %s"
                 agent-shell-side-compat--upgrade-hint)
        (signal (car err) (cdr err))))))
+
+(defun agent-shell-side-compat-read-queue-prompt (shell-buffer initial)
+  "Read a prompt for SHELL-BUFFER in the minibuffer, prefilled with INITIAL.
+
+The same read `agent-shell-prompt-queue' uses, so @ and / completion work
+in it.  Signals `quit' when the user gives up, like any minibuffer read."
+  (unless (fboundp 'agent-shell--prompt-queue-read)
+    (error "Missing agent-shell--prompt-queue-read; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (with-current-buffer shell-buffer
+    (agent-shell--prompt-queue-read :initial initial)))
+
+(defun agent-shell-side-compat-queue-prompt (shell-buffer prompt)
+  "Queue PROMPT in SHELL-BUFFER to start its next turn.
+
+Always queues, never steers: `agent-shell-prompt-while-busy' defaults to
+steering, and a steer can replace what the shell is already doing."
+  (unless (fboundp 'agent-shell--prompt-send)
+    (error "Missing agent-shell--prompt-send; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (with-current-buffer shell-buffer
+    (agent-shell--prompt-send :prompt prompt :disposition 'queue)))
+
+(defun agent-shell-side-compat-viewport-buffer-p (&optional buffer)
+  "Return non-nil when BUFFER, or the current one, is a viewport buffer."
+  (with-current-buffer (or buffer (current-buffer))
+    (derived-mode-p 'agent-shell-viewport-view-mode
+                    'agent-shell-viewport-edit-mode)))
+
+(defun agent-shell-side-compat-prefer-viewport-p ()
+  "Return non-nil when shells should be shown through the viewport.
+
+Either because the user asked for it globally, or because the command
+was issued from a viewport buffer.  Mirrors `agent-shell--fork-shell-buffer'."
+  (or (and (boundp 'agent-shell-prefer-viewport-interaction)
+           agent-shell-prefer-viewport-interaction)
+      (agent-shell-side-compat-viewport-buffer-p)))
+
+(defun agent-shell-side-compat-show-in-viewport (shell-buffer)
+  "Show SHELL-BUFFER through a viewport, as `agent-shell-fork' would."
+  (unless (fboundp 'agent-shell-viewport--show-buffer)
+    (error "Missing agent-shell-viewport--show-buffer; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (agent-shell-viewport--show-buffer :shell-buffer shell-buffer))
 
 (provide 'agent-shell-side-compat)
 
