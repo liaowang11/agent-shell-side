@@ -320,10 +320,7 @@ subscription drops itself after firing."
                (setq sent t)
                (when (buffer-live-p side-buffer)
                  (agent-shell-side--unsubscribe side-buffer token)
-                 (agent-shell-insert :text message
-                                     :submit t
-                                     :no-focus t
-                                     :shell-buffer side-buffer))))))
+                 (agent-shell-side-compat-send-to-shell side-buffer message))))))
     token))
 
 
@@ -802,15 +799,6 @@ before asking the user for anything."
                   (or (map-elt parent-config :mode-line-name) "This agent")))
     parent-buffer))
 
-(defun agent-shell-side--side-window-p (window)
-  "Return non-nil when WINDOW is one of the frame's side windows.
-
-Such a window is scenery for what it holds rather than a place to put
-things: it cannot be made the only window, and handing it a different
-buffer leaves that buffer stuck in a narrow strip."
-  (and (window-live-p window)
-       (window-parameter window 'window-side)))
-
 (defun agent-shell-side--display (buffer &optional viewport)
   "Show side conversation BUFFER, honoring `agent-shell-side-display-action'.
 
@@ -911,11 +899,9 @@ viewport user actually is."
 Disposal follows `agent-shell-side-on-dismiss'.
 
 PARENT-SHOWN means the caller has already put the parent in front of the
-user, so this must not show it again.  The handback sets it: under
-viewport interaction the findings go into the parent's compose buffer,
-and re-displaying the parent shell would re-enter the viewport with
-nothing to append, which flips that compose buffer to read-only view
-mode and strands the findings there unsendable."
+user, so this must not show it again.  The handback always sets it: the
+findings land in the parent's compose buffer, and displaying the parent
+shell on top would bury the draft the user is meant to send."
   (let* ((parent (agent-shell-side--live-buffer
                   (buffer-local-value 'agent-shell-side--parent-buffer
                                       side-buffer)))
@@ -924,16 +910,13 @@ mode and strands the findings there unsendable."
                    (when (buffer-live-p side-buffer)
                      (let ((window (get-buffer-window side-buffer)))
                        (kill-buffer side-buffer)
-                       (cond
-                        ((not (window-live-p window)) nil)
-                        ;; A side window belongs to the side conversation, so
-                        ;; it goes when that does.  Handing it to the parent
-                        ;; instead would leave the parent showing twice, once
-                        ;; in a strip it was never meant to occupy.
-                        ((agent-shell-side--side-window-p window)
-                         (ignore-errors (delete-window window)))
-                        ((and parent (not parent-shown))
-                         (set-window-buffer window parent)))))
+                       ;; A side window goes with the side conversation:
+                       ;; `display-buffer-in-side-window' dedicates it, so
+                       ;; `kill-buffer' has already deleted it here.  Only an
+                       ;; ordinary window survives to be handed the parent.
+                       (when (and (window-live-p window)
+                                  parent (not parent-shown))
+                         (set-window-buffer window parent))))
                    (when (and parent (not parent-shown)
                               (not (get-buffer-window parent)))
                      (agent-shell-side--display-parent parent)))))
@@ -1074,10 +1057,8 @@ whether or not the parent is mid-turn."
     (when (memq (agent-shell-status :shell-buffer side-buffer) '(busy blocked))
       (user-error "The side conversation is still working; wait for it to finish"))
     (agent-shell-side--collect-summary side-buffer parent-buffer)
-    (agent-shell-insert :text agent-shell-side-handback-prompt
-                        :submit t
-                        :no-focus t
-                        :shell-buffer side-buffer)
+    (agent-shell-side-compat-send-to-shell side-buffer
+                                           agent-shell-side-handback-prompt)
     (message "Side conversation: summarising for %s..." (buffer-name parent-buffer))))
 
 ;;;###autoload

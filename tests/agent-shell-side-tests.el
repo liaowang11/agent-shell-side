@@ -1607,5 +1607,71 @@ to differ, so that is the one asserted here."
     (should (equal (car seen) (cadr seen)))
     (should (car (car seen)))))
 
+(ert-deftest agent-shell-side-test-conclude-runs-from-a-compose-buffer ()
+  "Concluding works from the parent's compose buffer, not just the shell.
+
+`agent-shell-insert' dispatches on the *current* buffer, so from a
+viewport it routes into `agent-shell-viewport--show-buffer', which
+signals \"Not yet supported\" for `:submit'.  The summary request must
+address the side conversation's shell buffer directly."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-test-inserted nil)
+           (viewport (generate-new-buffer " *agent-shell side test compose*")))
+      (unwind-protect
+          (with-current-buffer viewport
+            (agent-shell-viewport-edit-mode)
+            (setq-local agent-shell-test-viewport-shell parent)
+            (setq-local agent-shell-side--side-buffer side)
+            (agent-shell-side-tests--silently
+              (agent-shell-side-conclude))
+            (should (agent-shell-side-tests--inserted-into side)))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-side-test-handback-keeps-a-queued-draft-queued ()
+  "Appending findings must not downgrade a queued draft into a steer.
+
+`agent-shell-viewport--show-buffer' writes the disposition on every
+call, nil included, so passing none would drop the user's `queue' and
+let `agent-shell-prompt-while-busy' steer their prompt into the running
+turn instead."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-test-viewport-calls nil)
+           (viewport (generate-new-buffer " *agent-shell side test compose*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer viewport
+              (agent-shell-viewport-edit-mode)
+              (setq-local agent-shell-test-viewport-shell parent)
+              (insert "a follow-up I drafted")
+              (setq-local agent-shell-viewport--compose-disposition 'queue))
+            (agent-shell-side-tests--conclude-with-summary side "it pulls tokio-util")
+            (should (eq (plist-get (car agent-shell-test-viewport-calls) :disposition)
+                        'queue)))
+        (kill-buffer viewport)))))
+
+(ert-deftest agent-shell-side-test-handback-does-not-inherit-a-stale-disposition ()
+  "An empty compose buffer's leftover disposition is not carried forward.
+
+The disposition belongs to a draft.  With no draft in progress there is
+nothing to honour, and reusing the last one would apply one command's
+choice to a different prompt."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-test-viewport-calls nil)
+           (viewport (generate-new-buffer " *agent-shell side test compose*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer viewport
+              (agent-shell-viewport-edit-mode)
+              (setq-local agent-shell-test-viewport-shell parent)
+              (setq-local agent-shell-viewport--compose-disposition 'steer))
+            (agent-shell-side-tests--conclude-with-summary side "it pulls tokio-util")
+            (should-not (plist-get (car agent-shell-test-viewport-calls) :disposition)))
+        (kill-buffer viewport)))))
+
 (provide 'agent-shell-side-tests)
 ;;; agent-shell-side-tests.el ends here

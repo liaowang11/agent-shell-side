@@ -41,7 +41,9 @@
 (eval-when-compile (require 'cl-lib))
 
 (declare-function agent-shell--start "agent-shell")
+(declare-function agent-shell--insert-to-shell-buffer "agent-shell")
 (declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
+(declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 
 (defvar agent-shell--state)
 (defvar agent-shell-prefer-viewport-interaction)
@@ -148,18 +150,63 @@ was issued from a viewport buffer.  Mirrors `agent-shell--fork-shell-buffer'."
            agent-shell-side-compat--upgrade-hint))
   (agent-shell-viewport--show-buffer :shell-buffer shell-buffer))
 
+(defun agent-shell-side-compat--compose-disposition (shell-buffer)
+  "Return the disposition of SHELL-BUFFER\='s in-progress compose draft.
+
+Nil when there is no draft to speak for.  `agent-shell-viewport--show-buffer\='
+writes the disposition on every call, nil included, so appending to a
+draft the user had already marked `queue\=' would silently downgrade it to
+whatever `agent-shell-prompt-while-busy\=' says -- steer, by default.
+Reading it first lets us hand the same answer back.
+
+Only an edit-mode buffer with something in it counts, matching how
+`agent-shell-viewport--show-buffer\=' itself decides a draft is in
+progress.  An empty compose buffer keeps a stale disposition, which is
+the very thing writing on every call exists to clear."
+  (when (fboundp 'agent-shell-viewport--buffer)
+    (when-let* ((viewport (ignore-errors
+                            (agent-shell-viewport--buffer
+                             :shell-buffer shell-buffer :existing-only t)))
+                ((buffer-live-p viewport)))
+      (with-current-buffer viewport
+        (and (derived-mode-p 'agent-shell-viewport-edit-mode)
+             (> (buffer-size) 0)
+             (bound-and-true-p agent-shell-viewport--compose-disposition))))))
+
 (defun agent-shell-side-compat-compose-in-viewport (shell-buffer text)
   "Open SHELL-BUFFER's viewport compose buffer with TEXT appended, to be sent.
 
 Opens in edit mode even while the shell is busy, which is the point: the
 compose buffer is the one surface a viewport user can write in while a
-turn runs, and its send keys let them queue or steer what they wrote."
+turn runs, and its send keys let them queue or steer what they wrote.
+
+Carries any in-progress draft's disposition through, so appending
+findings to a prompt the user had already chosen to queue does not turn
+it into a steer."
   (unless (fboundp 'agent-shell-viewport--show-buffer)
     (error "Missing agent-shell-viewport--show-buffer; %s"
            agent-shell-side-compat--upgrade-hint))
-  (agent-shell-viewport--show-buffer :shell-buffer shell-buffer
-                                     :append text
-                                     :edit t))
+  (agent-shell-viewport--show-buffer
+   :shell-buffer shell-buffer
+   :append text
+   :edit t
+   :disposition (agent-shell-side-compat--compose-disposition shell-buffer)))
+
+(defun agent-shell-side-compat-send-to-shell (shell-buffer text)
+  "Submit TEXT to SHELL-BUFFER without moving the user\='s focus.
+
+Deliberately not `agent-shell-insert\=': that dispatches on the *current*
+buffer, so calling it from a viewport compose buffer routes into
+`agent-shell-viewport--show-buffer\=', which signals \"Not yet supported\"
+for both `:submit\=' and `:no-focus\='.  The target here is always a side
+conversation\='s shell buffer, never a viewport, so address it directly."
+  (unless (fboundp 'agent-shell--insert-to-shell-buffer)
+    (error "Missing agent-shell--insert-to-shell-buffer; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (agent-shell--insert-to-shell-buffer :text text
+                                       :submit t
+                                       :no-focus t
+                                       :shell-buffer shell-buffer))
 
 (provide 'agent-shell-side-compat)
 

@@ -1,7 +1,9 @@
 # Design: open work for agent-shell-side
 
-Status as of 2026-09-06. `make check` is green (104 ERT tests against stubs)
-and `make live-check` passes 10 of 10 against a real claude-agent-acp 0.70.
+Status as of 2026-09-06. `make check` is green (107 ERT tests against stubs).
+`make live-check` last passed 10 of 10 against a real claude-agent-acp 0.70,
+before the handback moved to a compose buffer; its probes were updated to
+match but have not been re-run against an agent since.
 
 Four questions were open when this was written. This document records the
 decision for each, and what changed once they were built and run. Items 1
@@ -299,9 +301,11 @@ and what runs either side of it.
    clearing happens in the same call right after the event is dispatched.
 
 4. **The README described a mode-line marker that did not exist.** The
-   pending flag was read only by the `conclude` guard. Fixed by building
-   it: the lighter now reads " Side:findings waiting", and pending
-   outranks parent status, which would otherwise say the same thing twice.
+   pending flag was read only by the `conclude` guard. It was built --
+   the lighter grew a " Side:findings waiting" arm -- and then removed
+   again with the rest of the wait-for-idle machinery once the handback
+   became a compose buffer. Nothing is ever pending now, so there is
+   nothing for a marker to say.
 
 5. **Resume dropped the record before the session was known to load.**
    `session/load` is still in flight at that point, so an agent that
@@ -416,6 +420,44 @@ offer the first, and only later.
 Removed with it: `agent-shell-side-handback-submit`, which had become a
 setting that could not do anything, since sending is now the compose
 buffer's business rather than ours.
+
+Review of that change found four more, three of them real:
+
+- **`conclude` signalled from a compose buffer.** `agent-shell-insert`
+  dispatches on the *current* buffer, not the target: from a viewport it
+  routes into `agent-shell-viewport--show-buffer`, whose first two lines
+  reject `:submit` and `:no-focus` with "Not yet supported". So asking
+  the side conversation for its summary failed exactly where the compose
+  buffer had just become the routine place to stand. The subscription and
+  its 180s timer were already installed, so the user saw nothing for
+  three minutes and then "no summary after 180s". Both call sites now go
+  through `agent-shell-side-compat-send-to-shell`, which addresses the
+  shell buffer directly. The stub had hidden this by not dispatching at
+  all; making it faithful also failed an existing viewport test that had
+  been passing vacuously.
+- **The handback downgraded a queued draft to a steer.**
+  `agent-shell-viewport--show-buffer` writes the compose disposition on
+  every call, nil included, by design. Appending findings to a prompt the
+  user had marked `queue` reset it, so `C-c C-c` fell through to
+  `agent-shell-prompt-while-busy`, whose default is `steer` -- their
+  queued follow-up would have been injected into the running turn.
+  The disposition of an in-progress draft is now read first and handed
+  back.
+- **The new side-window arm in `--close` was dead.**
+  `display-buffer-in-side-window` dedicates the window, so `kill-buffer`
+  has already deleted it via `replace-buffer-in-windows`. Verified: the
+  predicate was never called, and its test passed anyway because Emacs
+  did the work. The arm and `agent-shell-side--side-window-p` are gone;
+  the test stays, since it asserts the outcome.
+- Not a defect: the compose buffer is selected when the summary lands,
+  which the old `:no-focus` path never did. That is the point of the
+  change, but it is a visible difference for every user, so the README
+  now says so.
+
+The recurring lesson holds, in a third form. It was not enough to read
+what an upstream function does; this one dispatches on ambient state, so
+the same call means different things depending on where the user is
+standing.
 
 ## Order of work
 

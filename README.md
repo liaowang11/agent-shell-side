@@ -63,6 +63,12 @@ buffer is also the only surface that works while the parent is mid-turn, since a
 busy shell cannot take text at its prompt. shell-maker appends output at the end
 of the buffer and would swallow it.
 
+The draft comes to you. Summarising takes as long as the agent takes, so the
+compose buffer opens and is selected whenever the summary lands, which may be
+after you have moved on to something else. If the compose buffer already held an
+unsent draft of your own, the findings are appended below it and your draft's
+queue-or-steer choice is kept.
+
 If the summary comes back empty, or the parent is gone, the side conversation is
 left open rather than closed on nothing. Customize
 `agent-shell-side-handback-prompt` to change what is asked for.
@@ -226,10 +232,11 @@ Against claude-agent-acp 0.70, end to end:
   before the standing-conventions clause; see above)
 - `session/delete` succeeds
 
-`make live-check` covers the rest, and passes 10 of 10 against
-claude-agent-acp 0.70:
+`make live-check` covers the rest. It last passed 10 of 10 against
+claude-agent-acp 0.70, before the handback moved to a compose buffer:
 
-- the handback summarises, reaches the parent's prompt staged rather than sent,
+- the handback summarises, reaches the parent's compose buffer as an editable
+  draft rather than being sent,
   and closes the side conversation
 - a handback whose parent is killed mid-summary leaves the side conversation
   open rather than discarding it

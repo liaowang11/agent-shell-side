@@ -318,7 +318,6 @@ case up front rather than forking into nothing."
   "Conclude a side conversation and check its findings reach the parent."
   (let ((parent (agent-shell-side-live--start-parent))
         (agent-shell-side-on-dismiss 'delete)
-        (agent-shell-side-handback-submit nil)
         (side nil))
     (unwind-protect
         (progn
@@ -341,12 +340,22 @@ case up front rather than forking into nothing."
              (format "after summarising, the side conversation should be gone; summary was: %s"
                      (agent-shell-side-live--excerpt summary)))
             (agent-shell-side-live--check
-             "handback reaches the parent's prompt"
-             (with-current-buffer parent
-               (save-excursion
-                 (goto-char (point-min))
-                 (search-forward agent-shell-side-handback-header nil t)))
-             "the parent buffer should hold the findings header, staged but not sent")))
+             "handback reaches the parent's compose buffer"
+             (when-let* ((viewport (agent-shell-viewport--buffer
+                                    :shell-buffer parent :existing-only t)))
+               (with-current-buffer viewport
+                 (save-excursion
+                   (goto-char (point-min))
+                   (search-forward agent-shell-side-handback-header nil t))))
+             "the parent's compose buffer should hold the findings header, unsent")
+            (agent-shell-side-live--check
+             "handback leaves the findings editable"
+             (when-let* ((viewport (agent-shell-viewport--buffer
+                                    :shell-buffer parent :existing-only t)))
+               (with-current-buffer viewport
+                 (and (derived-mode-p 'agent-shell-viewport-edit-mode)
+                      (not buffer-read-only))))
+             "the findings must arrive as a draft the user can edit and send")))
       (agent-shell-side-live--kill side parent))))
 
 (defun agent-shell-side-live--probe-handback-loses-its-parent ()

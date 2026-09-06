@@ -51,6 +51,10 @@
 (defvar agent-shell-test-viewport-calls nil
   "Full keyword arguments of each `agent-shell-viewport--show-buffer' call.")
 
+(defvar-local agent-shell-viewport--compose-disposition nil
+  "Stub of the compose buffer's send disposition.")
+(put 'agent-shell-viewport--compose-disposition 'permanent-local t)
+
 (defvar-local agent-shell-test-viewport-shell nil
   "In a stub viewport buffer, the shell buffer it stands for.")
 (put 'agent-shell-test-viewport-shell 'permanent-local t)
@@ -63,22 +67,36 @@
                   shell-buffer))
             (buffer-list)))
 
-(cl-defun agent-shell-viewport--show-buffer (&rest args &key shell-buffer &allow-other-keys)
-  "Record a viewport display, creating the stub viewport buffer on demand."
+(cl-defun agent-shell-viewport--show-buffer (&rest args
+                                             &key shell-buffer submit no-focus
+                                             disposition
+                                             &allow-other-keys)
+  "Record a viewport display, creating the stub viewport buffer on demand.
+
+Refuses SUBMIT and NO-FOCUS exactly as the real one does, so a caller
+that reaches a viewport when it meant to reach a shell fails here too."
+  (when submit
+    (error "Not yet supported"))
+  (when no-focus
+    (error "Not yet supported"))
   (push shell-buffer agent-shell-test-viewport-shown)
   (push args agent-shell-test-viewport-calls)
-  (or (agent-shell-viewport--buffer :shell-buffer shell-buffer)
-      (let ((buffer (generate-new-buffer " *agent-shell side test viewport*")))
-        (with-current-buffer buffer
-          (agent-shell-viewport-edit-mode)
-          (setq-local agent-shell-test-viewport-shell shell-buffer))
-        buffer)))
+  (let ((buffer (or (agent-shell-viewport--buffer :shell-buffer shell-buffer)
+                    (let ((buffer (generate-new-buffer
+                                   " *agent-shell side test viewport*")))
+                      (with-current-buffer buffer
+                        (agent-shell-viewport-edit-mode)
+                        (setq-local agent-shell-test-viewport-shell shell-buffer))
+                      buffer))))
+    ;; Written on every call, nil included, as the real one is.
+    (with-current-buffer buffer
+      (setq-local agent-shell-viewport--compose-disposition disposition))
+    buffer))
 
-(cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
+(cl-defun agent-shell--insert-to-shell-buffer (&key text submit no-focus shell-buffer)
   "Record an insertion instead of touching a shell.
 
-Refuses when the target is busy, as the real one does
-\(`agent-shell--insert-to-shell-buffer' signals \"Busy, try later\")."
+Refuses when the target is busy, as the real one does."
   (let ((target (or shell-buffer (current-buffer))))
     (when (memq (agent-shell-status :shell-buffer target) '(busy blocked))
       (user-error "Busy, try later"))
@@ -88,6 +106,23 @@ Refuses when the target is busy, as the real one does
                 (cons :shell-buffer target))
           agent-shell-test-inserted))
   nil)
+
+(cl-defun agent-shell-insert (&key text submit no-focus shell-buffer)
+  "Dispatch on the current buffer, as the real one does.
+
+From a viewport buffer it routes to `agent-shell-viewport--show-buffer',
+which signals for `:submit' and `:no-focus'.  Anything that must reach a
+shell buffer regardless of where the command was run has to say so."
+  (if (and (not (derived-mode-p 'agent-shell-mode))
+           (or agent-shell-prefer-viewport-interaction
+               (derived-mode-p 'agent-shell-viewport-edit-mode)
+               (derived-mode-p 'agent-shell-viewport-view-mode)))
+      (agent-shell-viewport--show-buffer :append text :submit submit
+                                         :no-focus no-focus
+                                         :shell-buffer shell-buffer)
+    (agent-shell--insert-to-shell-buffer :text text :submit submit
+                                         :no-focus no-focus
+                                         :shell-buffer shell-buffer)))
 
 (defun agent-shell-cwd ()
   "Return the stubbed working directory."
