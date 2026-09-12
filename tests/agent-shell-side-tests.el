@@ -1738,6 +1738,142 @@ the buffer being displayed is the viewport, not the shell."
       (with-current-buffer side-viewport
         (should (agent-shell-side-buffer-p))))))
 
+;;; Fitting a layout: the before-display hook, 2026-09-12
+
+(ert-deftest agent-shell-side-test-before-display-hook-sees-the-side ()
+  "The hook runs with the side buffer before a new side is shown."
+  (agent-shell-side-tests--with-parent
+    (let* ((seen nil)
+           (agent-shell-side-before-display-functions
+            (list (lambda (buffer) (push (cons buffer (current-buffer)) seen))))
+           (side (agent-shell-side-tests--start-side parent)))
+      (should (equal seen (list (cons side parent)))))))
+
+(ert-deftest agent-shell-side-test-before-display-hook-sees-the-parent ()
+  "The hook runs with the parent before the parent is shown afresh."
+  (agent-shell-side-tests--with-parent
+    (let* ((seen nil)
+           (side (agent-shell-side-tests--start-side parent))
+           (agent-shell-side-on-dismiss 'delete)
+           (agent-shell-side-before-display-functions
+            (list (lambda (buffer) (push buffer seen)))))
+      (agent-shell-side-tests--with-windows
+        (agent-shell-side-tests--reset-windows)
+        (set-window-buffer (selected-window)
+                           (get-buffer-create " *agent-shell side test elsewhere*"))
+        (should-not (get-buffer-window parent))
+        (agent-shell-side-tests--silently
+          (with-current-buffer side (agent-shell-side-dismiss)))
+        (should (equal seen (list parent)))))))
+
+(ert-deftest agent-shell-side-test-a-window-the-hook-reveals-is-selected ()
+  "After the hook, a window already showing the buffer is used, not a new one.
+
+A layout manager that switches perspective in the hook may bring the
+buffer on screen by doing so; displaying it again would show it twice."
+  (agent-shell-side-tests--with-parent
+    (agent-shell-side-tests--with-windows
+      (agent-shell-side-tests--reset-windows)
+      (set-window-buffer (selected-window) parent)
+      (let* ((agent-shell-side-before-display-functions
+              (list (lambda (buffer) (set-window-buffer (selected-window) buffer))))
+             (side (agent-shell-side-tests--start-side parent)))
+        (should (equal (length (get-buffer-window-list side)) 1))
+        (should-not (agent-shell-side-tests--side-windows))
+        (should (eq (window-buffer (selected-window)) side))))))
+
+(ert-deftest agent-shell-side-test-a-viewport-the-hook-reveals-is-selected ()
+  "The same under viewport interaction: a visible viewport is not re-shown."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (agent-shell-side-before-display-functions
+            (list (lambda (_buffer) (set-window-buffer (selected-window) side-viewport)))))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (setq agent-shell-test-viewport-shown nil)
+            (with-current-buffer parent (agent-shell-side-toggle))
+            (should-not agent-shell-test-viewport-shown)
+            (should (eq (window-buffer (selected-window)) side-viewport)))
+        (agent-shell-side-tests--reset-windows)))))
+
+;;; Resume rebuilds the right config, 2026-09-12
+
+(defun agent-shell-side-tests--claude-configs ()
+  "Two configs sharing an identifier, as profiles of one agent do."
+  (list (list (cons :identifier 'claude-code)
+              (cons :buffer-name "Claude")
+              (cons :mode-line-name "Claude"))
+        (list (cons :identifier 'claude-code)
+              (cons :buffer-name "Claude")
+              (cons :mode-line-name "Claude(token)"))))
+
+(ert-deftest agent-shell-side-test-keep-records-the-config-name ()
+  "A kept record names the parent's config, not just its agent."
+  (agent-shell-side-tests--with-parent
+    (agent-shell-side-tests--with-links-file
+      (let ((side (agent-shell-side-tests--start-side parent))
+            (agent-shell-side-on-dismiss 'keep))
+        (agent-shell-side-tests--silently
+          (with-current-buffer side (agent-shell-side-dismiss)))
+        (let ((record (car (agent-shell-side-links-read))))
+          (should (eq (map-elt record :agent) 'claude-code))
+          (should (equal (map-elt record :config-name) "Claude")))))))
+
+(ert-deftest agent-shell-side-test-resolve-config-by-name-among-profiles ()
+  "With several configs for one agent, the recorded name picks one silently."
+  (let ((agent-shell-agent-configs (agent-shell-side-tests--claude-configs)))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Should not prompt"))))
+      (should (equal (map-elt (agent-shell-side-resolve-config
+                               '((:agent . claude-code) (:config-name . "Claude(token)")))
+                              :mode-line-name)
+                     "Claude(token)")))))
+
+(ert-deftest agent-shell-side-test-resolve-config-asks-when-ambiguous ()
+  "Without a usable name and several candidates, the user picks by label."
+  (let ((agent-shell-agent-configs (agent-shell-side-tests--claude-configs))
+        (offered nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (setq offered (mapcar (lambda (c) (if (consp c) (car c) c)) collection))
+                 "Claude(token)")))
+      (should (equal (map-elt (agent-shell-side-resolve-config
+                               '((:agent . claude-code)))
+                              :mode-line-name)
+                     "Claude(token)"))
+      (should (equal offered '("Claude" "Claude(token)")))
+      (should (equal (map-elt (agent-shell-side-resolve-config
+                               '((:agent . claude-code) (:config-name . "Claude(removed)")))
+                              :mode-line-name)
+                     "Claude(token)")))))
+
+(ert-deftest agent-shell-side-test-resolve-config-single-candidate-needs-no-name ()
+  "One config for the agent is taken whatever the record calls it, and none is nil."
+  (let ((agent-shell-agent-configs (list (car (agent-shell-side-tests--claude-configs)))))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Should not prompt"))))
+      (should (equal (map-elt (agent-shell-side-resolve-config
+                               '((:agent . claude-code) (:config-name . "Claude(token)")))
+                              :mode-line-name)
+                     "Claude"))
+      (should-not (agent-shell-side-resolve-config '((:agent . codex)))))))
+
+(ert-deftest agent-shell-side-test-resume-uses-the-resolver-function ()
+  "Resume rebuilds the config through `agent-shell-side-resolve-config-function'."
+  (agent-shell-side-tests--with-resumable-record
+    (let ((agent-shell-side-resolve-config-function
+           (lambda (record)
+             (should (equal (map-elt record :side-session-id) "side-9"))
+             (list (cons :identifier 'claude-code)
+                   (cons :buffer-name "Mine")
+                   (cons :mode-line-name "Mine")))))
+      (agent-shell-side-tests--silently (agent-shell-side-resume))
+      (should (equal (map-elt (map-elt agent-shell-test-started :config) :mode-line-name)
+                     (concat "Mine" agent-shell-side-buffer-name-suffix))))))
+
 ;;; One handback path, whatever the viewport setting
 
 (ert-deftest agent-shell-side-test-conclude-composes-without-viewport-interaction ()

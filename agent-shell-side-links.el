@@ -17,6 +17,7 @@
 ;;   ((:side-session-id . "…")
 ;;    (:parent-session-id . "…")
 ;;    (:agent . claude-code)      ; config identifier, to rebuild the config
+;;    (:config-name . "Claude")   ; its :mode-line-name, to pick among profiles
 ;;    (:cwd . "/path/to/project/")
 ;;    (:created . "2026-08-24T14:03:00+0800")
 ;;    (:boundary-version . 1))    ; which boundary text the session started with
@@ -70,15 +71,18 @@ resumed session.  Records written under an older revision are reported by
 (cl-defun agent-shell-side-links-make (&key side-session-id
                                             parent-session-id
                                             agent
+                                            config-name
                                             cwd
                                             created
                                             boundary-version)
   "Return a link record.
 
 SIDE-SESSION-ID and PARENT-SESSION-ID are ACP session ids.  AGENT is the
-`:identifier' of the agent config the shell was started with.  CWD is the
-directory the side conversation ran in.  CREATED defaults to now, and
-BOUNDARY-VERSION to `agent-shell-side-boundary-version'."
+`:identifier' of the agent config the shell was started with, and
+CONFIG-NAME its `:mode-line-name', which tells profiles of one agent
+apart.  CWD is the directory the side conversation ran in.  CREATED
+defaults to now, and BOUNDARY-VERSION to
+`agent-shell-side-boundary-version'."
   (unless side-session-id
     (error ":side-session-id is required"))
   (unless parent-session-id
@@ -86,6 +90,7 @@ BOUNDARY-VERSION to `agent-shell-side-boundary-version'."
   (list (cons :side-session-id side-session-id)
         (cons :parent-session-id parent-session-id)
         (cons :agent agent)
+        (cons :config-name config-name)
         (cons :cwd cwd)
         (cons :created (or created (format-time-string "%FT%T%z")))
         (cons :boundary-version (or boundary-version

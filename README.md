@@ -103,6 +103,12 @@ they are not. An action that opens an ordinary window rather than a side window
 works too: closing frees that window when the parent is already on screen, and
 gives it to the parent otherwise.
 
+If your layout lives in perspectives, tabs, or workspaces, add a function to
+`agent-shell-side-before-display-functions`. It is called with the shell buffer
+about to be shown, before it is shown, so you can switch to where that buffer
+belongs. A window the switch brings on screen is then selected rather than the
+buffer being displayed a second time.
+
 A `display-buffer-alist` entry that matches the buffer wins over any action a
 package passes, so if you route buffers through one, that entry decides. To give
 side conversations an entry of their own, use `agent-shell-side-buffer-p` as its
@@ -190,10 +196,17 @@ own store. `agent-shell-side-on-dismiss` decides what to do when you close one:
 - `ask` — ask each time.
 
 A kept session is recorded as which fork belonged to which parent, with the
-agent identifier and working directory. The identifier matters: resuming
-rebuilds the side config from it so the side instructions are re-sent. Agents
-read `_meta.systemPrompt` again on resume and would otherwise drop the side
-policy.
+agent identifier, the parent config's name, and the working directory. The
+identifier matters: resuming rebuilds the side config from it so the side
+instructions are re-sent. Agents read `_meta.systemPrompt` again on resume and
+would otherwise drop the side policy.
+
+The config is found by `agent-shell-side-resolve-config-function`. The default
+looks in `agent-shell-agent-configs` for the identifier, takes a single match,
+prefers the one whose name the record carries when there are several, and asks
+otherwise, since several configs for one agent are usually profiles of it. If
+your configs are built on demand or live elsewhere, set the function to one that
+maps a record to a config.
 
 Records also carry a boundary version. A record written under older instruction
 text is still resumable, but says so, since both texts then apply to that

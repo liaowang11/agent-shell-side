@@ -162,6 +162,36 @@ condition of such an entry.  See `display-buffer' for the format."
   :type '(cons (repeat function) alist)
   :group 'agent-shell-side)
 
+(defcustom agent-shell-side-before-display-functions nil
+  "Abnormal hook run before a side conversation or its parent is shown.
+
+Each function is called with the shell buffer about to be displayed,
+with the buffer the command was run from current.  For layouts kept in
+perspectives, tabs, or workspaces, this is the moment to switch to where
+that buffer belongs.
+
+If the buffer, or its viewport, is on screen once the hook has run, that
+window is selected and nothing is displayed afresh."
+  :type 'hook
+  :group 'agent-shell-side)
+
+(defcustom agent-shell-side-resolve-config-function
+  #'agent-shell-side-resolve-config
+  "Function returning the agent config a kept side conversation resumes with.
+
+Called with the link record, an alist with at least `:agent', the
+`:identifier' of the parent's config, and `:config-name', its
+`:mode-line-name' when the record is recent enough to carry one.  Must
+return a config as built by `agent-shell-make-agent-config', or nil for
+none.
+
+The default, `agent-shell-side-resolve-config', looks in
+`agent-shell-agent-configs' and asks when several configs share the
+identifier.  Replace it when configs are built on demand or live
+somewhere else."
+  :type 'function
+  :group 'agent-shell-side)
+
 (defcustom agent-shell-side-buffer-name-suffix " [side]"
   "Appended to the agent's buffer and mode-line names in a side conversation."
   :type 'string
@@ -435,18 +465,47 @@ metadata.  PARENT-CONFIG is left unchanged."
           (agent-shell-side--session-meta (map-elt parent-config :session-meta)))
     config))
 
-(defun agent-shell-side--config-for-identifier (identifier)
-  "Return the known agent config whose `:identifier' is IDENTIFIER, or nil.
+(defun agent-shell-side--known-configs ()
+  "Return the configs in `agent-shell-agent-configs', resolved.
 
-Resolves `agent-shell-agent-configs', which holds either configs or
-functions returning them, and may itself be a function."
-  (seq-find (lambda (config)
-              (eq (map-elt config :identifier) identifier))
-            (mapcar (lambda (entry)
-                      (if (functionp entry) (funcall entry) entry))
-                    (if (functionp agent-shell-agent-configs)
-                        (funcall agent-shell-agent-configs)
-                      agent-shell-agent-configs))))
+That variable holds either configs or functions returning them, and may
+itself be a function."
+  (mapcar (lambda (entry)
+            (if (functionp entry) (funcall entry) entry))
+          (if (functionp agent-shell-agent-configs)
+              (funcall agent-shell-agent-configs)
+            agent-shell-agent-configs)))
+
+(defun agent-shell-side-resolve-config (record)
+  "Return the known agent config kept side conversation RECORD resumes with.
+
+Candidates are the configs in `agent-shell-agent-configs' whose
+`:identifier' is the record's `:agent'.  One candidate is taken as is.
+Among several, the one whose `:mode-line-name' is the record's
+`:config-name' wins; failing that the user chooses by name, since several
+configs for one agent are usually profiles of it and only the user knows
+which one the conversation was.  Nil when there is no candidate."
+  (let* ((identifier (map-elt record :agent))
+         (name (map-elt record :config-name))
+         (candidates (seq-filter (lambda (config)
+                                   (eq (map-elt config :identifier) identifier))
+                                 (agent-shell-side--known-configs))))
+    (cond
+     ((null candidates) nil)
+     ((null (cdr candidates)) (car candidates))
+     ((seq-find (lambda (config)
+                  (equal (map-elt config :mode-line-name) name))
+                candidates))
+     (t
+      (let* ((choices (mapcar (lambda (config)
+                                (cons (format "%s" (map-elt config :mode-line-name))
+                                      config))
+                              candidates))
+             (choice (completing-read
+                      (format "Several %s configs; resume this side conversation with: "
+                              identifier)
+                      choices nil t)))
+        (cdr (assoc choice choices)))))))
 
 
 ;;; Parent status
@@ -753,6 +812,7 @@ cannot leave the buffer unclosable."
           :side-session-id side-session-id
           :parent-session-id parent-session-id
           :agent (map-elt (agent-shell-get-config parent) :identifier)
+          :config-name (map-elt (agent-shell-get-config parent) :mode-line-name)
           :cwd (buffer-local-value 'default-directory side-buffer)))
       (message "agent-shell-side: not recording this side conversation (%s)"
                (cond ((not side-session-id) "it has no session yet")
@@ -826,13 +886,22 @@ before asking the user for anything."
 With VIEWPORT, or when the user prefers viewport interaction, the buffer
 is shown through a viewport as `agent-shell-fork' would show it, with
 the action deciding where that viewport goes."
-  (if (or viewport (agent-shell-side-compat-prefer-viewport-p))
-      ;; The viewport show displays through `agent-shell-display-action'.
-      ;; Binding it is the one way to give the side action a say there.
-      (let ((agent-shell-display-action agent-shell-side-display-action))
-        (agent-shell-side-compat-show-in-viewport buffer))
+  (agent-shell-side--before-display buffer)
+  (cond
+   ((agent-shell-side--window buffer)
+    (select-window (agent-shell-side--window buffer)))
+   ((or viewport (agent-shell-side-compat-prefer-viewport-p))
+    ;; The viewport show displays through `agent-shell-display-action'.
+    ;; Binding it is the one way to give the side action a say there.
+    (let ((agent-shell-display-action agent-shell-side-display-action))
+      (agent-shell-side-compat-show-in-viewport buffer)))
+   (t
     (when-let* ((window (display-buffer buffer agent-shell-side-display-action)))
-      (select-window window))))
+      (select-window window)))))
+
+(defun agent-shell-side--before-display (buffer)
+  "Run `agent-shell-side-before-display-functions' for BUFFER."
+  (run-hook-with-args 'agent-shell-side-before-display-functions buffer))
 
 (defun agent-shell-side--window (shell-buffer)
   "Return the window on this frame showing SHELL-BUFFER, or its viewport.
@@ -866,10 +935,15 @@ With PARENT nil the window is left to Emacs."
 Deliberately not `agent-shell-side-display-action': the parent is an
 ordinary shell, and the default side action would file it away in the
 strip meant for the side conversation."
-  (if (agent-shell-side-compat-prefer-viewport-p)
-      (agent-shell-side-compat-show-in-viewport buffer)
+  (agent-shell-side--before-display buffer)
+  (cond
+   ((agent-shell-side--window buffer)
+    (select-window (agent-shell-side--window buffer)))
+   ((agent-shell-side-compat-prefer-viewport-p)
+    (agent-shell-side-compat-show-in-viewport buffer))
+   (t
     (when-let* ((window (display-buffer buffer agent-shell-display-action)))
-      (select-window window))))
+      (select-window window)))))
 
 ;;;###autoload
 (defun agent-shell-side (&optional message)
@@ -1140,8 +1214,7 @@ the conversation can be tried again once whatever refused it is fixed."
                             (reverse records)))
            (choice (completing-read "Resume side conversation: " choices nil t))
            (record (cdr (assoc choice choices)))
-           (config (agent-shell-side--config-for-identifier
-                    (map-elt record :agent))))
+           (config (funcall agent-shell-side-resolve-config-function record)))
       (unless config
         (user-error "No known agent config for %s" (map-elt record :agent)))
       (when (agent-shell-side-links-stale-p record)
@@ -1207,7 +1280,7 @@ record."
   "Return a completion label for link RECORD."
   (format "%s  %s  %s%s"
           (map-elt record :created)
-          (or (map-elt record :agent) "?")
+          (or (map-elt record :config-name) (map-elt record :agent) "?")
           (abbreviate-file-name (or (map-elt record :cwd) ""))
           (if (agent-shell-side-links-stale-p record) "  (older instructions)" "")))
 

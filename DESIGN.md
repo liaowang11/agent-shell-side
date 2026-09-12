@@ -511,6 +511,36 @@ parent is displayed, for layouts that live in perspectives or tabs, and
 a way for resume to rebuild the right config when several share an
 identifier.
 
+## 9. Two extension points, 2026-09-12
+
+Both follow from section 8's principle: the package knows which buffer
+is which, and offers hooks and options rather than knowledge of any
+particular setup.
+
+1. **`agent-shell-side-before-display-functions`.** Window layouts that
+   live in perspectives, tabs, or workspaces need a moment before a
+   buffer is shown to switch to where it belongs. An abnormal hook called
+   with the shell buffer about to be displayed is the Emacs idiom for
+   that. Both display paths run it. After it runs, a window already
+   showing the buffer, or its viewport, is selected instead of displaying
+   afresh, since a switch of perspective is exactly the kind of thing
+   that brings the buffer on screen, and displaying it again would show
+   it twice. The same check also spares a visible viewport from being
+   re-shown with nothing to append.
+
+2. **`agent-shell-side-resolve-config-function`.** Resume rebuilt the
+   config by taking the first entry in `agent-shell-agent-configs` with
+   the record's identifier. Several configs per agent is the normal case
+   for anyone with more than one profile, and configs may be built on
+   demand rather than listed, so the first match was a guess. Records now
+   carry the parent config's `:mode-line-name` as `:config-name`. The
+   default resolver takes a single candidate as is, prefers the named one
+   among several, and asks otherwise; older records without a name take
+   the asking path. The function is replaceable for configs that live
+   elsewhere. `:mode-line-name` rather than `:buffer-name` because it is
+   what agent-shell shows the user, and a name the user recognizes is the
+   point of asking by name.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the
