@@ -151,10 +151,14 @@ parent's window and `agent-shell-side-toggle' swaps the two, set this to
 selects the other window when both are visible and falls back to
 displaying through this action when they are not.
 
-Ignored under `agent-shell-prefer-viewport-interaction', and when the
-command was issued from a viewport buffer.  The viewport owns its own
-layout, and a compose buffer wedged into a side window is not an
-improvement.  See `display-buffer' for the format."
+Under `agent-shell-prefer-viewport-interaction', or when the command was
+issued from a viewport buffer, it is the side conversation's viewport
+that is shown, and this action decides where that viewport goes.
+
+A matching `display-buffer-alist' entry wins over this, as it does over
+any action passed to `display-buffer'.  `agent-shell-side-buffer-p'
+accepts a buffer name and recognizes viewports, so it serves as the
+condition of such an entry.  See `display-buffer' for the format."
   :type '(cons (repeat function) alist)
   :group 'agent-shell-side)
 
@@ -235,15 +239,35 @@ One of `needs-approval', `finished', `failed', `closed', or nil.")
   "Return BUFFER when it is still live, else nil."
   (and (bufferp buffer) (buffer-live-p buffer) buffer))
 
-(defun agent-shell-side-buffer-p (&optional buffer)
-  "Return non-nil when BUFFER is a side conversation.
+(defun agent-shell-side-buffer-p (&optional buffer-or-name)
+  "Return non-nil when BUFFER-OR-NAME belongs to a side conversation.
+
+Either the side conversation's shell buffer or its viewport buffer.
+Defaults to the current buffer.  Accepting a name and a viewport is what
+makes this usable as a `display-buffer-alist' condition: those receive
+the name of the buffer being displayed, and under viewport interaction
+that buffer is the viewport, not the shell.
 
 Stays true after the parent is killed.  A side conversation that outlived
 its parent is still a side conversation, and still has a forked session
 to dispose of."
-  (and (buffer-local-value 'agent-shell-side--is-side
-                           (or buffer (current-buffer)))
-       t))
+  (when-let* ((buffer (get-buffer (or buffer-or-name (current-buffer))))
+              ((buffer-live-p buffer)))
+    (or (and (buffer-local-value 'agent-shell-side--is-side buffer) t)
+        (and (agent-shell-side--viewport-shell buffer) t))))
+
+(defun agent-shell-side--viewport-shell (buffer)
+  "Return the side conversation whose viewport BUFFER is, or nil.
+
+Matched exactly, by asking each side conversation for its viewport,
+rather than through `agent-shell-shell-buffer', which falls back to the
+first shell in the project when a viewport cannot be paired and would
+make an unrelated viewport pass for a side one."
+  (when (agent-shell-side-compat-viewport-buffer-p buffer)
+    (seq-find (lambda (shell)
+                (and (buffer-local-value 'agent-shell-side--is-side shell)
+                     (eq (agent-shell-side-compat-viewport-buffer shell) buffer)))
+              (buffer-list))))
 
 (defun agent-shell-side--session-id (buffer)
   "Return BUFFER's ACP session id.
@@ -495,10 +519,7 @@ MESSAGE is what the agent said, repeated so the reason is not guesswork."
                  (buffer-local-value 'agent-shell-side--parent-buffer
                                      side-buffer))))
     (when (buffer-live-p side-buffer)
-      (let ((window (get-buffer-window side-buffer)))
-        (kill-buffer side-buffer)
-        (when (and parent (window-live-p window))
-          (set-window-buffer window parent)))))
+      (agent-shell-side--kill-and-hand-back side-buffer parent)))
   (message (concat "agent-shell-side: the fork did not start a session%s.  "
                    "A conversation that has not taken a turn yet cannot be "
                    "forked; send a message in it first")
@@ -803,12 +824,41 @@ before asking the user for anything."
   "Show side conversation BUFFER, honoring `agent-shell-side-display-action'.
 
 With VIEWPORT, or when the user prefers viewport interaction, the buffer
-is shown through a viewport as `agent-shell-fork' would show it, and the
-action is not consulted."
+is shown through a viewport as `agent-shell-fork' would show it, with
+the action deciding where that viewport goes."
   (if (or viewport (agent-shell-side-compat-prefer-viewport-p))
-      (agent-shell-side-compat-show-in-viewport buffer)
+      ;; The viewport show displays through `agent-shell-display-action'.
+      ;; Binding it is the one way to give the side action a say there.
+      (let ((agent-shell-display-action agent-shell-side-display-action))
+        (agent-shell-side-compat-show-in-viewport buffer))
     (when-let* ((window (display-buffer buffer agent-shell-side-display-action)))
       (select-window window))))
+
+(defun agent-shell-side--window (shell-buffer)
+  "Return the window on this frame showing SHELL-BUFFER, or its viewport.
+
+Under viewport interaction only the viewport is ever on screen, so asking
+after the shell buffer alone finds nothing."
+  (or (get-buffer-window shell-buffer)
+      (when-let* ((viewport (agent-shell-side-compat-viewport-buffer shell-buffer)))
+        (get-buffer-window viewport))))
+
+(defun agent-shell-side--kill-and-hand-back (side-buffer parent)
+  "Kill SIDE-BUFFER and settle the window it was in, in PARENT's favor.
+
+A side window is dedicated and goes with the buffer.  An ordinary window
+survives: it is deleted when PARENT is already on screen, since handing
+it over would show the parent twice, and given to PARENT otherwise.
+Whether the parent is on screen is decided before the kill, because
+afterwards the window shows some previous buffer, possibly the parent.
+With PARENT nil the window is left to Emacs."
+  (let ((window (get-buffer-window side-buffer))
+        (parent-shown (and parent (agent-shell-side--window parent))))
+    (kill-buffer side-buffer)
+    (when (and parent (window-live-p window))
+      (if (and parent-shown (window-deletable-p window))
+          (delete-window window)
+        (set-window-buffer window parent)))))
 
 (defun agent-shell-side--display-parent (buffer)
   "Show parent shell BUFFER where `agent-shell' puts its own buffers.
@@ -872,7 +922,7 @@ cannot be forked costs no typing."
     ;; Already on screen: toggling is "look at the other end", so move
     ;; point rather than rearranging windows.  This is the normal case
     ;; under the default side-window layout, where both are visible.
-    (if-let* ((window (get-buffer-window target)))
+    (if-let* ((window (agent-shell-side--window target)))
         (select-window window)
       ;; Otherwise put it where its kind belongs.  With the action set to
       ;; `display-buffer-same-window' this reproduces the old swap, since
@@ -908,18 +958,15 @@ shell on top would bury the draft the user is meant to send."
          (disposal (agent-shell-side--read-disposal))
          (finish (lambda ()
                    (when (buffer-live-p side-buffer)
-                     (let ((window (get-buffer-window side-buffer)))
-                       (kill-buffer side-buffer)
-                       ;; A side window goes with the side conversation:
-                       ;; `display-buffer-in-side-window' dedicates it, so
-                       ;; `kill-buffer' has already deleted it here.  Only an
-                       ;; ordinary window survives to be handed the parent.
-                       (when (and (window-live-p window)
-                                  parent (not parent-shown))
-                         (set-window-buffer window parent))))
-                   (when (and parent (not parent-shown)
-                              (not (get-buffer-window parent)))
-                     (agent-shell-side--display-parent parent)))))
+                     (agent-shell-side--kill-and-hand-back
+                      side-buffer (and (not parent-shown) parent)))
+                   ;; Move to the parent where it already shows, as a shell
+                   ;; or a viewport.  Re-showing a visible viewport is the
+                   ;; path that flips a compose buffer to view mode.
+                   (when (and parent (not parent-shown))
+                     (if-let* ((window (agent-shell-side--window parent)))
+                         (select-window window)
+                       (agent-shell-side--display-parent parent))))))
     (with-current-buffer side-buffer
       (when (memq (agent-shell-status) '(busy blocked))
         (agent-shell-interrupt t)))

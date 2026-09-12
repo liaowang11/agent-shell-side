@@ -1561,6 +1561,183 @@ meant for the side conversation."
         (should (get-buffer-window parent))
         (should-not (window-parameter (get-buffer-window parent) 'window-side))))))
 
+;;; On screen means the shell or its viewport, 2026-09-12
+
+(defun agent-shell-side-tests--viewport-of (shell)
+  "Return the stub viewport buffer standing for SHELL, creating it if needed."
+  (agent-shell-viewport--show-buffer :shell-buffer shell))
+
+(ert-deftest agent-shell-side-test-toggle-selects-the-visible-viewport ()
+  "Under viewport interaction, a visible viewport counts as the other end.
+
+Only the viewports are ever on screen there, so looking for the shell
+buffer's window finds nothing and re-displays every time."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-viewport-shown nil)
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent)))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent-viewport)
+            (let ((parent-window (selected-window))
+                  (side-window (split-window)))
+              (set-window-buffer side-window side-viewport)
+              (select-window side-window)
+              (setq agent-shell-test-viewport-shown nil)
+              (with-current-buffer side-viewport
+                (agent-shell-side-toggle))
+              (should (eq (selected-window) parent-window))
+              (should-not agent-shell-test-viewport-shown)
+              (with-current-buffer parent-viewport
+                (agent-shell-side-toggle))
+              (should (eq (selected-window) side-window))
+              (should-not agent-shell-test-viewport-shown)))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-dismiss-selects-the-visible-parent-viewport ()
+  "Closing with the parent's viewport on screen moves there, without re-showing.
+
+Re-entering the viewport show with nothing to append is the path that
+flips a compose buffer to view mode."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-side-on-dismiss 'delete)
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent)))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent-viewport)
+            (let ((parent-window (selected-window))
+                  (side-window (split-window)))
+              (set-window-buffer side-window side-viewport)
+              (select-window side-window)
+              (setq agent-shell-test-viewport-shown nil)
+              (agent-shell-side-tests--silently
+                (with-current-buffer side-viewport
+                  (agent-shell-side-dismiss)))
+              (should-not (buffer-live-p side))
+              (should (eq (selected-window) parent-window))
+              (should-not agent-shell-test-viewport-shown)))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-closing-drops-an-ordinary-side-window-too ()
+  "A side conversation in an ordinary window frees it when the parent shows.
+
+Only a side window is deleted by `kill-buffer'.  With an action that
+opens an ordinary window, handing that window to a parent already on
+screen shows the parent twice."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-side-display-action '((display-buffer-below-selected)))
+          (agent-shell-side-on-dismiss 'delete))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent)
+            (let* ((parent-window (selected-window))
+                   (side (agent-shell-side-tests--start-side parent)))
+              (should (equal (length (window-list)) 2))
+              (agent-shell-side-tests--silently
+                (with-current-buffer side (agent-shell-side-dismiss)))
+              (should (equal (length (window-list)) 1))
+              (should (eq (selected-window) parent-window))
+              (should (eq (window-buffer parent-window) parent))))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-closing-hands-an-ordinary-window-to-a-hidden-parent ()
+  "With the parent off screen, the side's ordinary window shows the parent."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-side-display-action '((display-buffer-below-selected)))
+          (agent-shell-side-on-dismiss 'delete)
+          (elsewhere (get-buffer-create " *agent-shell side test elsewhere*")))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent)
+            (let* ((parent-window (selected-window))
+                   (side (agent-shell-side-tests--start-side parent))
+                   (side-window (get-buffer-window side)))
+              (set-window-buffer parent-window elsewhere)
+              (agent-shell-side-tests--silently
+                (with-current-buffer side (agent-shell-side-dismiss)))
+              (should (eq (window-buffer side-window) parent))
+              (should (eq (selected-window) side-window))
+              (should (equal (length (get-buffer-window-list parent)) 1))))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-abandoned-fork-frees-its-window-the-same-way ()
+  "A fork torn down for want of a session settles its window like a close."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-side-display-action '((display-buffer-below-selected))))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent)
+            (let* ((side (agent-shell-side-tests--open-side parent))
+                   (handler (agent-shell-side-tests--handler side nil)))
+              (should (equal (length (window-list)) 2))
+              (agent-shell-side-tests--silently
+                (funcall handler '((:event . error)
+                                   (:data . ((:code . -32002)
+                                             (:message . "Resource not found: x"))))))
+              (should (equal (length (window-list)) 1))
+              (should (eq (window-buffer (selected-window)) parent))))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-viewport-display-uses-the-side-action ()
+  "Shown through a viewport, a side conversation still follows its action.
+
+The viewport show displays through `agent-shell-display-action'; a
+viewport user otherwise has no package-level say in where a side lands."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-prefer-viewport-interaction t)
+          (agent-shell-side-display-action '((display-buffer-at-bottom)))
+          (agent-shell-test-viewport-actions nil))
+      (with-current-buffer parent (agent-shell-side))
+      (should (equal agent-shell-test-viewport-actions
+                     (list '((display-buffer-at-bottom))))))))
+
+(ert-deftest agent-shell-side-test-viewport-display-of-the-parent-keeps-its-action ()
+  "The parent shown through a viewport follows `agent-shell-display-action'."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-side-display-action '((display-buffer-at-bottom)))
+           (agent-shell-side-on-dismiss 'delete)
+           (side (agent-shell-side-tests--start-side parent))
+           (agent-shell-test-viewport-actions nil))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window)
+                               (get-buffer-create " *agent-shell side test elsewhere*"))
+            (agent-shell-side-tests--silently
+              (with-current-buffer side (agent-shell-side-dismiss)))
+            (should (equal agent-shell-test-viewport-actions
+                           (list agent-shell-display-action))))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-buffer-p-accepts-names-and-viewports ()
+  "The predicate works as a `display-buffer-alist' condition.
+
+Those conditions receive a buffer name, and under viewport interaction
+the buffer being displayed is the viewport, not the shell."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent)))
+      (should (agent-shell-side-buffer-p (buffer-name side)))
+      (should (agent-shell-side-buffer-p side-viewport))
+      (should (agent-shell-side-buffer-p (buffer-name side-viewport)))
+      (should-not (agent-shell-side-buffer-p parent))
+      (should-not (agent-shell-side-buffer-p parent-viewport))
+      (should-not (agent-shell-side-buffer-p " *agent-shell side test no such*"))
+      (with-current-buffer side-viewport
+        (should (agent-shell-side-buffer-p))))))
+
 ;;; One handback path, whatever the viewport setting
 
 (ert-deftest agent-shell-side-test-conclude-composes-without-viewport-interaction ()

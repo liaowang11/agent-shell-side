@@ -143,6 +143,12 @@ was issued from a viewport buffer.  Mirrors `agent-shell--fork-shell-buffer'."
            agent-shell-prefer-viewport-interaction)
       (agent-shell-side-compat-viewport-buffer-p)))
 
+(defun agent-shell-side-compat-viewport-buffer (shell-buffer)
+  "Return SHELL-BUFFER's viewport buffer when one already exists, else nil."
+  (when (fboundp 'agent-shell-viewport--buffer)
+    (ignore-errors
+      (agent-shell-viewport--buffer :shell-buffer shell-buffer :existing-only t))))
+
 (defun agent-shell-side-compat-show-in-viewport (shell-buffer)
   "Show SHELL-BUFFER through a viewport, as `agent-shell-fork' would."
   (unless (fboundp 'agent-shell-viewport--show-buffer)

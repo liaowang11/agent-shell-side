@@ -459,6 +459,58 @@ what an upstream function does; this one dispatches on ambient state, so
 the same call means different things depending on where the user is
 standing.
 
+## 8. On screen means the shell or its viewport, 2026-09-12
+
+Two reports from using section 7 under viewport interaction: the side
+opened beside the parent's window rather than at the frame's edge, and
+toggling left the parent showing twice. Both had one cause. Every
+"is it on screen" question asked after the shell buffer, and under
+viewport interaction the shell buffer is never on screen; its viewport
+is. So toggle found nothing and re-displayed, close found nothing and
+re-displayed, and the side action was skipped outright on that path.
+
+1. **One notion of "on screen".** `--window` returns the window showing a
+   shell buffer or its existing viewport. Toggle selects it when it
+   exists. Close selects the parent's window when it exists instead of
+   re-showing the parent, which under viewport interaction re-entered the
+   viewport show with nothing to append, the path section 6 item 1
+   identified as flipping a compose buffer to view mode. The
+   fork-teardown path shares the helper.
+
+2. **Ordinary windows are settled, not just side windows.** Section 7
+   relied on `display-buffer-in-side-window` dedicating the window so
+   `kill-buffer` deletes it. Any other action leaves the window standing,
+   and handing it to a parent already on screen shows the parent twice.
+   `--kill-and-hand-back` deletes the window when the parent is visible
+   and deletable, and gives it to the parent otherwise. "Parent visible"
+   is decided before the kill: afterwards the window shows some previous
+   buffer, which under same-window display is the parent itself.
+
+3. **The side action applies to the viewport too.** Section 7 said the
+   viewport owns its layout. In practice that meant a viewport user had
+   no package-level say in where a side lands, since the viewport show
+   ends in `agent-shell--display-buffer`, which reads
+   `agent-shell-display-action`. That is a user option, so binding it to
+   the side action around the show is legitimate and needs no new
+   internals. The parent's viewport is still shown through the ordinary
+   action.
+
+4. **A condition for `display-buffer-alist`.** The package cannot and
+   should not win over a user's `display-buffer-alist`; that is the
+   Emacs contract, and users who route buffers through a popup manager
+   are exactly the ones who hit the first report. What the package owes
+   them is a way to name side conversations in a rule.
+   `agent-shell-side-buffer-p` now takes a buffer or name and recognizes
+   a side conversation's viewport. The viewport is matched exactly, by
+   asking each side conversation for its own viewport, not through
+   `agent-shell-shell-buffer`, whose fallback to the first shell in the
+   project would make an unrelated viewport pass for a side one.
+
+Not done here, listed for the next change: a hook run before a side or
+parent is displayed, for layouts that live in perspectives or tabs, and
+a way for resume to rebuild the right config when several share an
+identifier.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the

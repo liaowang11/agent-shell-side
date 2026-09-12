@@ -99,7 +99,22 @@ window and toggling swaps the two, set it to same-window:
 
 Everything follows from the action: toggling still selects the other window when
 both happen to be visible, and falls back to displaying through the action when
-they are not.
+they are not. An action that opens an ordinary window rather than a side window
+works too: closing frees that window when the parent is already on screen, and
+gives it to the parent otherwise.
+
+A `display-buffer-alist` entry that matches the buffer wins over any action a
+package passes, so if you route buffers through one, that entry decides. To give
+side conversations an entry of their own, use `agent-shell-side-buffer-p` as its
+condition. It accepts the buffer name those conditions receive, and recognizes a
+side conversation's viewport buffer as well as its shell:
+
+```elisp
+(add-to-list 'display-buffer-alist
+             '(agent-shell-side-buffer-p
+               (display-buffer-in-side-window)
+               (side . right) (window-width . 0.4)))
+```
 
 ### Keeping track of what is open
 
@@ -195,8 +210,9 @@ the record stays so you can try again.
 
 With `agent-shell-prefer-viewport-interaction` set, or when started from a
 viewport buffer, the side conversation opens through a viewport as
-`agent-shell-fork` would, and `agent-shell-side-display-action` is not consulted:
-the viewport owns its own layout.
+`agent-shell-fork` would. `agent-shell-side-display-action` decides where that
+viewport goes, and toggling and closing treat a visible viewport as the
+conversation being on screen.
 
 The keys above are deliberately *not* bound in a viewport compose buffer.
 `agent-shell-viewport-edit-mode` already uses `C-c C-k` to discard the draft and

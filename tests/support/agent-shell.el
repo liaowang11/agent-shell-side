@@ -51,6 +51,12 @@
 (defvar agent-shell-test-viewport-calls nil
   "Full keyword arguments of each `agent-shell-viewport--show-buffer' call.")
 
+(defvar agent-shell-test-viewport-actions nil
+  "Value of `agent-shell-display-action' at each viewport show, newest first.
+
+The real `agent-shell-viewport--show-buffer' displays through
+`agent-shell--display-buffer', which reads that variable.")
+
 (defvar-local agent-shell-viewport--compose-disposition nil
   "Stub of the compose buffer's send disposition.")
 (put 'agent-shell-viewport--compose-disposition 'permanent-local t)
@@ -81,6 +87,7 @@ that reaches a viewport when it meant to reach a shell fails here too."
     (error "Not yet supported"))
   (push shell-buffer agent-shell-test-viewport-shown)
   (push args agent-shell-test-viewport-calls)
+  (push agent-shell-display-action agent-shell-test-viewport-actions)
   (let ((buffer (or (agent-shell-viewport--buffer :shell-buffer shell-buffer)
                     (let ((buffer (generate-new-buffer
                                    " *agent-shell side test viewport*")))
