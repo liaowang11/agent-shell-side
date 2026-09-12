@@ -42,6 +42,9 @@
 
 (defvar agent-shell-prefer-viewport-interaction nil)
 
+(defconst agent-shell-viewport--suffix " [viewport]"
+  "Suffix the real package appends to a shell buffer's name for its viewport.")
+
 (define-derived-mode agent-shell-viewport-view-mode text-mode "Viewport (View)")
 (define-derived-mode agent-shell-viewport-edit-mode text-mode "Viewport (Edit)")
 

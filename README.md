@@ -25,6 +25,10 @@ Once a side conversation exists, `agent-shell-side-mode` turns on in both
 buffers and binds its own keys, so the binding above is only needed to start
 one.
 
+A side conversation's buffer name ends in `agent-shell-side-buffer-name-suffix`
+(` [side]`) whatever your `agent-shell-buffer-name-format` does with the agent
+name, so it can be told apart in buffer lists.
+
 ## Commands
 
 | Command | Key (in linked buffers) | What it does |
@@ -33,7 +37,7 @@ one.
 | `agent-shell-side-toggle` | `C-c C-b` | Move between the side conversation and its parent |
 | `agent-shell-side-conclude` | `C-c C-q` | Summarise the side conversation into the parent, then close it |
 | `agent-shell-side-dismiss` | `C-c C-k` | Close the side conversation, discarding what it learned |
-| `agent-shell-side-resume` | | Reopen a side conversation that was kept |
+| `agent-shell-side-resume` | | Reopen a side conversation that was kept; with a prefix argument, from any conversation |
 | `agent-shell-side-list` | | Switch to one of the side conversations that are open |
 | `agent-shell-side-describe` | | Echo what this buffer is and how to leave it |
 
@@ -102,6 +106,11 @@ both happen to be visible, and falls back to displaying through the action when
 they are not. An action that opens an ordinary window rather than a side window
 works too: closing frees that window when the parent is already on screen, and
 gives it to the parent otherwise.
+
+A compose draft in progress is never disturbed by displaying its conversation:
+toggling to a parent or side whose compose buffer holds text shows that buffer as
+it stands, rather than re-entering the viewport, which while the shell is busy
+would flip it to view mode and lose the draft.
 
 If your layout lives in perspectives, tabs, or workspaces, add a function to
 `agent-shell-side-before-display-functions`. It is called with the shell buffer

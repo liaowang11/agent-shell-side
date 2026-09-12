@@ -541,6 +541,34 @@ particular setup.
    what agent-shell shows the user, and a name the user recognizes is the
    point of asking by name.
 
+## 10. Loose ends, 2026-09-12
+
+1. **The side marker survives any buffer-name format.** The suffix rode in
+   the config's `:buffer-name`, and `agent-shell--format-buffer-name` hands
+   that to `agent-shell-buffer-name-format`, which a user function may
+   ignore. `--mark-side` now renames a side buffer whose name came back
+   without the suffix, allowing for a `<N>` uniquifier, and renames an
+   existing viewport with it, because agent-shell pairs viewport and
+   shell by name and `agent-shell-start` under viewport interaction can
+   create the viewport before the mark. Renaming is what
+   `shell-maker-rename-buffer` does too, so it is a supported operation.
+
+2. **`agent-shell-side-resume` takes EVERYWHERE**, as `-list` does. Same
+   scoping rule: the current conversation's records by default, all of
+   them on request.
+
+3. **A draft in progress is never disturbed.** Reading
+   `agent-shell-viewport--show-buffer` for section 8 showed what a
+   re-show with nothing to append does: with the shell busy it switches
+   the compose buffer to view mode, and the draft is not snapshotted on
+   that transition; with the shell idle and the buffer in view mode it
+   switches to edit mode and wipes. Only an edit-mode buffer that already
+   has text survives. So displaying a conversation whose compose buffer
+   holds a draft now displays that buffer directly through the action,
+   and only a draft-less viewport goes through the show, which is what
+   refreshes a page. Section 8's "select it if visible" already covered
+   the on-screen case; this covers the off-screen one.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the

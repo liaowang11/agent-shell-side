@@ -149,6 +149,23 @@ was issued from a viewport buffer.  Mirrors `agent-shell--fork-shell-buffer'."
     (ignore-errors
       (agent-shell-viewport--buffer :shell-buffer shell-buffer :existing-only t))))
 
+(defun agent-shell-side-compat-viewport-suffix ()
+  "Return the suffix agent-shell appends to a shell's name for its viewport."
+  (bound-and-true-p agent-shell-viewport--suffix))
+
+(defun agent-shell-side-compat-viewport-draft-buffer (shell-buffer)
+  "Return SHELL-BUFFER's viewport when a compose draft is in progress there.
+
+Only an edit-mode viewport with something in it counts, matching how
+`agent-shell-viewport--show-buffer' itself decides a draft is in
+progress.  Nil otherwise."
+  (when-let* ((viewport (agent-shell-side-compat-viewport-buffer shell-buffer))
+              ((buffer-live-p viewport)))
+    (with-current-buffer viewport
+      (and (derived-mode-p 'agent-shell-viewport-edit-mode)
+           (> (buffer-size) 0)
+           viewport))))
+
 (defun agent-shell-side-compat-show-in-viewport (shell-buffer)
   "Show SHELL-BUFFER through a viewport, as `agent-shell-fork' would."
   (unless (fboundp 'agent-shell-viewport--show-buffer)
@@ -169,15 +186,8 @@ Only an edit-mode buffer with something in it counts, matching how
 `agent-shell-viewport--show-buffer\=' itself decides a draft is in
 progress.  An empty compose buffer keeps a stale disposition, which is
 the very thing writing on every call exists to clear."
-  (when (fboundp 'agent-shell-viewport--buffer)
-    (when-let* ((viewport (ignore-errors
-                            (agent-shell-viewport--buffer
-                             :shell-buffer shell-buffer :existing-only t)))
-                ((buffer-live-p viewport)))
-      (with-current-buffer viewport
-        (and (derived-mode-p 'agent-shell-viewport-edit-mode)
-             (> (buffer-size) 0)
-             (bound-and-true-p agent-shell-viewport--compose-disposition))))))
+  (when-let* ((viewport (agent-shell-side-compat-viewport-draft-buffer shell-buffer)))
+    (buffer-local-value 'agent-shell-viewport--compose-disposition viewport)))
 
 (defun agent-shell-side-compat-compose-in-viewport (shell-buffer text)
   "Open SHELL-BUFFER's viewport compose buffer with TEXT appended, to be sent.

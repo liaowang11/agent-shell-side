@@ -1874,6 +1874,143 @@ buffer on screen by doing so; displaying it again would show it twice."
       (should (equal (map-elt (map-elt agent-shell-test-started :config) :mode-line-name)
                      (concat "Mine" agent-shell-side-buffer-name-suffix))))))
 
+;;; The side marker survives any buffer-name format, 2026-09-12
+
+(ert-deftest agent-shell-side-test-side-buffer-name-carries-the-marker ()
+  "A side buffer's name ends with the suffix whatever the name format did.
+
+The suffix rides in the config's `:buffer-name', which a custom
+`agent-shell-buffer-name-format' is free to ignore.  The stub names the
+buffer without it, standing in for such a format."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (should (string-suffix-p agent-shell-side-buffer-name-suffix
+                               (buffer-name side))))))
+
+(ert-deftest agent-shell-side-test-side-buffer-name-is-not-marked-twice ()
+  "A name that already carries the marker, uniquified or not, is left alone."
+  (agent-shell-side-tests--with-parent
+    (dolist (name (list (concat " *agent-shell side test child*"
+                              agent-shell-side-buffer-name-suffix)
+                        (concat " *agent-shell side test child*"
+                              agent-shell-side-buffer-name-suffix "<2>")))
+      (let* ((real (symbol-function 'agent-shell--start))
+             (side (cl-letf (((symbol-function 'agent-shell--start)
+                              (lambda (&rest args)
+                                (let ((buffer (apply real args)))
+                                  (with-current-buffer buffer (rename-buffer name t))
+                                  buffer))))
+                     (agent-shell-side-tests--start-side parent))))
+        (should (equal (buffer-name side) name))
+        (kill-buffer side)))))
+
+(ert-deftest agent-shell-side-test-renaming-the-side-renames-its-viewport ()
+  "A viewport that already exists follows the shell's new name.
+
+agent-shell pairs a viewport with its shell by name, so renaming one
+without the other would orphan the viewport."
+  (agent-shell-side-tests--with-parent
+    (let* ((real (symbol-function 'agent-shell--start))
+           (side (cl-letf (((symbol-function 'agent-shell--start)
+                            (lambda (&rest args)
+                              (let* ((buffer (apply real args))
+                                     (viewport (agent-shell-side-tests--viewport-of buffer)))
+                                (with-current-buffer viewport
+                                  (rename-buffer (concat (buffer-name buffer)
+                                                         agent-shell-viewport--suffix)))
+                                buffer))))
+                   (agent-shell-side-tests--start-side parent)))
+           (viewport (agent-shell-side-tests--viewport-of side)))
+      (should (string-suffix-p agent-shell-side-buffer-name-suffix (buffer-name side)))
+      (should (equal (buffer-name viewport)
+                     (concat (buffer-name side) agent-shell-viewport--suffix))))))
+
+(ert-deftest agent-shell-side-test-resumed-side-buffer-name-carries-the-marker ()
+  "The same for a resumed side conversation."
+  (agent-shell-side-tests--with-resumable-record
+    (agent-shell-side-tests--silently (agent-shell-side-resume))
+    (should (string-suffix-p agent-shell-side-buffer-name-suffix
+                             (buffer-name (current-buffer))))))
+
+;;; Resume from anywhere, 2026-09-12
+
+(ert-deftest agent-shell-side-test-resume-everywhere-ignores-the-scope ()
+  "From a conversation with no kept records of its own, EVERYWHERE offers all.
+
+Mirrors `agent-shell-side-list': scoped by default, everything on request."
+  (agent-shell-side-tests--with-parent
+    (agent-shell-side-tests--with-resumable-record
+      (with-current-buffer parent
+        (should-error (agent-shell-side-resume) :type 'user-error)
+        (agent-shell-side-tests--silently (agent-shell-side-resume t))
+        (should (equal (map-elt agent-shell-test-started :session-id) "side-9"))))))
+
+;;; A draft in progress is never disturbed by displaying its conversation
+
+(ert-deftest agent-shell-side-test-displaying-a-parent-with-a-draft-shows-the-draft ()
+  "Toggling to a parent whose compose buffer holds a draft shows that buffer as is.
+
+Going through the viewport show would rewrite it: while the shell is busy
+that path flips the compose buffer to view mode and the draft is gone."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (side (agent-shell-side-tests--start-side parent))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent)))
+      (with-current-buffer parent-viewport
+        (agent-shell-viewport-edit-mode)
+        (insert "unfinished draft"))
+      (with-current-buffer parent (setq-local agent-shell-test-status 'busy))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window)
+                               (get-buffer-create " *agent-shell side test elsewhere*"))
+            (setq agent-shell-test-viewport-shown nil)
+            (with-current-buffer side (agent-shell-side-toggle))
+            (should-not agent-shell-test-viewport-shown)
+            (should (eq (window-buffer (selected-window)) parent-viewport))
+            (should (equal (with-current-buffer parent-viewport (buffer-string))
+                           "unfinished draft")))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-displaying-a-side-with-a-draft-shows-the-draft ()
+  "The same toggling to a side conversation, through the side action."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-side-display-action '((display-buffer-at-bottom)))
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side)))
+      (with-current-buffer side-viewport
+        (agent-shell-viewport-edit-mode)
+        (insert "half a question"))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent)
+            (setq agent-shell-test-viewport-shown nil)
+            (with-current-buffer parent (agent-shell-side-toggle))
+            (should-not agent-shell-test-viewport-shown)
+            (should (eq (window-buffer (selected-window)) side-viewport))
+            (should (equal (length (window-list)) 2))
+            (should (equal (with-current-buffer side-viewport (buffer-string))
+                           "half a question")))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-a-viewport-without-a-draft-is-shown-the-usual-way ()
+  "Without a draft the viewport show runs, since it is what refreshes a page."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (side (agent-shell-side-tests--start-side parent))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent)))
+      (with-current-buffer parent-viewport (agent-shell-viewport-view-mode))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (setq agent-shell-test-viewport-shown nil)
+            (with-current-buffer side (agent-shell-side-toggle))
+            (should (equal agent-shell-test-viewport-shown (list parent))))
+        (agent-shell-side-tests--reset-windows)))))
+
 ;;; One handback path, whatever the viewport setting
 
 (ert-deftest agent-shell-side-test-conclude-composes-without-viewport-interaction ()

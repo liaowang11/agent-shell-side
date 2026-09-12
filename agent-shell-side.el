@@ -193,7 +193,11 @@ somewhere else."
   :group 'agent-shell-side)
 
 (defcustom agent-shell-side-buffer-name-suffix " [side]"
-  "Appended to the agent's buffer and mode-line names in a side conversation."
+  "Appended to the agent's buffer and mode-line names in a side conversation.
+
+The buffer name carries it whatever `agent-shell-buffer-name-format'
+does with the agent name; a side buffer whose name comes back without
+it is renamed, and its viewport with it."
   :type 'string
   :group 'agent-shell-side)
 
@@ -716,7 +720,28 @@ as a freshly forked one.  Linking to a parent is separate."
     (setq agent-shell-side--is-side t)
     (setq agent-shell-side--created-at (current-time))
     (agent-shell-side-mode 1)
-    (add-hook 'kill-buffer-hook #'agent-shell-side--on-side-killed nil t)))
+    (add-hook 'kill-buffer-hook #'agent-shell-side--on-side-killed nil t))
+  (agent-shell-side--ensure-name-marker side-buffer))
+
+(defun agent-shell-side--ensure-name-marker (side-buffer)
+  "Make SIDE-BUFFER's name end with `agent-shell-side-buffer-name-suffix'.
+
+The suffix rides in the config's `:buffer-name', which a custom
+`agent-shell-buffer-name-format' is free to drop.  A name that already
+ends with it, uniquified or not, is left alone.  A viewport that already
+exists is renamed with the shell: agent-shell pairs the two by name."
+  (let ((suffix agent-shell-side-buffer-name-suffix)
+        (name (buffer-name side-buffer)))
+    (unless (or (string-empty-p suffix)
+                (string-match-p (concat (regexp-quote suffix) "\\(<[0-9]+>\\)?\\'")
+                                name))
+      (let* ((viewport (agent-shell-side-compat-viewport-buffer side-buffer))
+             (viewport-suffix (agent-shell-side-compat-viewport-suffix))
+             (new-name (with-current-buffer side-buffer
+                         (rename-buffer (concat name suffix) t))))
+        (when (and viewport viewport-suffix (buffer-live-p viewport))
+          (with-current-buffer viewport
+            (rename-buffer (concat new-name viewport-suffix) t)))))))
 
 (defun agent-shell-side--link (side-buffer parent-buffer)
   "Make SIDE-BUFFER and PARENT-BUFFER each other's counterpart."
@@ -886,22 +911,35 @@ before asking the user for anything."
 With VIEWPORT, or when the user prefers viewport interaction, the buffer
 is shown through a viewport as `agent-shell-fork' would show it, with
 the action deciding where that viewport goes."
-  (agent-shell-side--before-display buffer)
+  (agent-shell-side--show buffer agent-shell-side-display-action viewport))
+
+(defun agent-shell-side--show (buffer action &optional viewport)
+  "Show shell BUFFER through `display-buffer' ACTION and select it.
+
+Runs `agent-shell-side-before-display-functions' first.  A window already
+showing BUFFER, or its viewport, is then selected as is.
+
+With VIEWPORT, or when the user prefers viewport interaction, the
+viewport is shown instead of the shell.  A compose draft in progress is
+displayed as it stands: the viewport show would rewrite it, and while
+the shell is busy that path flips the compose buffer to view mode and
+the draft is gone.  Otherwise the viewport show runs, since it is what
+refreshes a page, displaying through ACTION."
+  (run-hook-with-args 'agent-shell-side-before-display-functions buffer)
   (cond
    ((agent-shell-side--window buffer)
     (select-window (agent-shell-side--window buffer)))
    ((or viewport (agent-shell-side-compat-prefer-viewport-p))
-    ;; The viewport show displays through `agent-shell-display-action'.
-    ;; Binding it is the one way to give the side action a say there.
-    (let ((agent-shell-display-action agent-shell-side-display-action))
-      (agent-shell-side-compat-show-in-viewport buffer)))
+    (if-let* ((draft (agent-shell-side-compat-viewport-draft-buffer buffer)))
+        (when-let* ((window (display-buffer draft action)))
+          (select-window window))
+      ;; The viewport show displays through `agent-shell-display-action'.
+      ;; Binding it is the one way to give ACTION a say there.
+      (let ((agent-shell-display-action action))
+        (agent-shell-side-compat-show-in-viewport buffer))))
    (t
-    (when-let* ((window (display-buffer buffer agent-shell-side-display-action)))
+    (when-let* ((window (display-buffer buffer action)))
       (select-window window)))))
-
-(defun agent-shell-side--before-display (buffer)
-  "Run `agent-shell-side-before-display-functions' for BUFFER."
-  (run-hook-with-args 'agent-shell-side-before-display-functions buffer))
 
 (defun agent-shell-side--window (shell-buffer)
   "Return the window on this frame showing SHELL-BUFFER, or its viewport.
@@ -935,15 +973,7 @@ With PARENT nil the window is left to Emacs."
 Deliberately not `agent-shell-side-display-action': the parent is an
 ordinary shell, and the default side action would file it away in the
 strip meant for the side conversation."
-  (agent-shell-side--before-display buffer)
-  (cond
-   ((agent-shell-side--window buffer)
-    (select-window (agent-shell-side--window buffer)))
-   ((agent-shell-side-compat-prefer-viewport-p)
-    (agent-shell-side-compat-show-in-viewport buffer))
-   (t
-    (when-let* ((window (display-buffer buffer agent-shell-display-action)))
-      (select-window window)))))
+  (agent-shell-side--show buffer agent-shell-display-action))
 
 ;;;###autoload
 (defun agent-shell-side (&optional message)
@@ -1183,11 +1213,13 @@ whether or not the parent is mid-turn."
     (message "Side conversation: summarising for %s..." (buffer-name parent-buffer))))
 
 ;;;###autoload
-(defun agent-shell-side-resume ()
+(defun agent-shell-side-resume (&optional everywhere)
   "Reopen a side conversation that was kept when it was closed.
 
 Offers the side conversations recorded for this shell's session, or all
-of them when this buffer has no session of its own.
+of them when this buffer has no session of its own.  With a prefix
+argument, EVERYWHERE, offers all of them regardless, as
+`agent-shell-side-list' does.
 
 The reopened buffer is a side conversation again, with the same keys and
 lighter, but stands on its own: nothing records which buffer its parent
@@ -1198,8 +1230,9 @@ The record it came from is consumed once the session really comes back,
 so a session that resumes is not offered twice.  One that does not is
 kept on the list: a load the agent rejects leaves the record alone, so
 the conversation can be tried again once whatever refused it is fixed."
-  (interactive)
-  (let* ((shell-buffer (agent-shell-shell-buffer :no-error t :no-create t))
+  (interactive "P")
+  (let* ((shell-buffer (unless everywhere
+                         (agent-shell-shell-buffer :no-error t :no-create t)))
          (session-id (and shell-buffer
                           (agent-shell-side--session-id shell-buffer)))
          (records (if session-id
