@@ -10,6 +10,7 @@
 
 (require 'cl-lib)
 (require 'map)
+(require 'shell-maker)
 
 (defconst agent-shell-test-stub-p t
   "Non-nil when the agent-shell test stub is loaded.")
@@ -196,6 +197,10 @@ its side conversation can differ."
   (let ((buffer (generate-new-buffer " *agent-shell side test child*")))
     (with-current-buffer buffer
       (agent-shell-mode)
+      ;; `shell-maker-start-v2' records the name it gave the buffer, since
+      ;; that is how shell-maker finds the buffer again.  Every agent-shell
+      ;; start passes a name of its own, so it is always recorded.
+      (setq-local shell-maker--buffer-name-override (buffer-name buffer))
       (setq-local agent-shell--state (list (cons :agent-config config)
                                            (cons :session nil)
                                            (cons :client 'stub-client)

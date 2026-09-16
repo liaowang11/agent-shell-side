@@ -1925,6 +1925,23 @@ without the other would orphan the viewport."
       (should (equal (buffer-name viewport)
                      (concat (buffer-name side) agent-shell-viewport--suffix))))))
 
+(ert-deftest agent-shell-side-test-marking-the-name-keeps-shell-maker-in-step ()
+  "Renaming the shell tells shell-maker the new name.
+
+shell-maker looks its own buffer up by name, from
+`shell-maker--buffer-name-override\='.  Left stale by a plain
+`rename-buffer\=', every `shell-maker-buffer\=' call `get-buffer-create\='s an
+empty impostor under the old name and `shell-maker--process\=' comes back
+nil, so submitting the opening message sets the shell busy and then
+fails against that nil -- a side conversation that never sends a word and
+never stops being busy."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (should (string-suffix-p agent-shell-side-buffer-name-suffix
+                               (buffer-name side)))
+      (should (equal (buffer-local-value 'shell-maker--buffer-name-override side)
+                     (buffer-name side))))))
+
 (ert-deftest agent-shell-side-test-resumed-side-buffer-name-carries-the-marker ()
   "The same for a resumed side conversation."
   (agent-shell-side-tests--with-resumable-record
@@ -2122,6 +2139,25 @@ choice to a different prompt."
             (agent-shell-side-tests--conclude-with-summary side "it pulls tokio-util")
             (should-not (plist-get (car agent-shell-test-viewport-calls) :disposition)))
         (kill-buffer viewport)))))
+
+;;; Showing a conversation is not composing a prompt, 2026-09-16
+
+(ert-deftest agent-shell-side-test-showing-a-conversation-collects-no-context ()
+  "Displaying a side conversation leaves its compose buffer empty.
+
+`agent-shell-viewport--show-buffer\=' falls back to `agent-shell--context\='
+when given no text, so merely showing a conversation would drop the
+region, or the line at point, into its draft -- material the opening
+message already carries, and a region the context collector deactivates
+on its way out.  An empty `:append\=' is how a caller says it brought its
+own text and there is none."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-viewport-calls nil))
+      (agent-shell-side-tests--start-side parent)
+      (should (equal (length agent-shell-test-viewport-calls) 1))
+      (should (equal (plist-get (car agent-shell-test-viewport-calls) :append)
+                     "")))))
 
 (provide 'agent-shell-side-tests)
 ;;; agent-shell-side-tests.el ends here

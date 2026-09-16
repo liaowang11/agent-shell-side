@@ -167,11 +167,19 @@ progress.  Nil otherwise."
            viewport))))
 
 (defun agent-shell-side-compat-show-in-viewport (shell-buffer)
-  "Show SHELL-BUFFER through a viewport, as `agent-shell-fork' would."
+  "Show SHELL-BUFFER through a viewport, as `agent-shell-fork' would.
+
+With one difference: the empty `:append\\=' says the caller brought its own
+text and there is none.  Given no text at all,
+`agent-shell-viewport--show-buffer\\=' falls back to `agent-shell--context\\=',
+so merely showing a conversation would drop the region, or the line at
+point, into its compose buffer -- material a side conversation\\='s opening
+message already carries, and a region the context collector deactivates
+on its way out.  Showing a conversation is not composing a prompt."
   (unless (fboundp 'agent-shell-viewport--show-buffer)
     (error "Missing agent-shell-viewport--show-buffer; %s"
            agent-shell-side-compat--upgrade-hint))
-  (agent-shell-viewport--show-buffer :shell-buffer shell-buffer))
+  (agent-shell-viewport--show-buffer :shell-buffer shell-buffer :append ""))
 
 (defun agent-shell-side-compat--compose-disposition (shell-buffer)
   "Return the disposition of SHELL-BUFFER\='s in-progress compose draft.

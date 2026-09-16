@@ -569,6 +569,42 @@ particular setup.
    refreshes a page. Section 8's "select it if visible" already covered
    the on-screen case; this covers the off-screen one.
 
+## 11. A rename the shell's owner was not told about, 2026-09-16
+
+Reported from a live conversation: a side conversation opened, its
+window appeared, its opening message landed at the prompt -- and nothing
+was ever sent. The shell stayed busy forever, and an empty buffer under
+the side conversation's pre-rename name sat in the buffer list.
+
+1. **shell-maker finds its buffer by name.** Section 10's item 1 renamed
+   the shell with `rename-buffer` and argued renaming was supported
+   because `shell-maker-rename-buffer` renames too. It does -- through
+   `shell-maker-set-buffer-name`, which also writes the new name to the
+   buffer-local `shell-maker--buffer-name-override`. That variable is how
+   `shell-maker-buffer` finds the shell, and it finds it with
+   `get-buffer-create`, so a stale name does not fail: it conjures an
+   empty impostor. `shell-maker--process` then reads nil from the
+   impostor, and `shell-maker-submit` sets `shell-maker--busy` before it
+   reaches that nil, so the first prompt leaves the shell busy with
+   nothing sent. Fixed by renaming through `shell-maker-set-buffer-name`.
+
+   Only users whose `agent-shell-buffer-name-format` drops the config's
+   `:buffer-name` ever saw it, since only they are renamed at all -- the
+   same population item 1 was written for. The unit stubs could not see
+   it either: they stubbed a rename with no owner to tell. The stub now
+   carries the override, and `tests/live/` grows a probe that forks under
+   a dropping name format and makes the fork answer a question.
+
+2. **Showing a conversation is not composing a prompt.** Given no text,
+   `agent-shell-viewport--show-buffer` falls back to
+   `agent-shell--context`, so displaying a side conversation dropped the
+   caller's region -- or, with `line` among `agent-shell-context-sources`,
+   the line at point -- into the new conversation's compose buffer. The
+   opening message already carries that material, quoted, so the user is
+   handed it twice; and the context collector deactivates the region on
+   its way out. Every display path now passes an empty `:append`, which
+   is how a caller says it brought its own text and there is none.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the

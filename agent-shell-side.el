@@ -729,7 +729,16 @@ as a freshly forked one.  Linking to a parent is separate."
 The suffix rides in the config's `:buffer-name', which a custom
 `agent-shell-buffer-name-format' is free to drop.  A name that already
 ends with it, uniquified or not, is left alone.  A viewport that already
-exists is renamed with the shell: agent-shell pairs the two by name."
+exists is renamed with the shell: agent-shell pairs the two by name.
+
+The shell is renamed through `shell-maker-set-buffer-name', never
+`rename-buffer': shell-maker looks the shell up by the name it recorded
+in `shell-maker--buffer-name-override', and a plain rename leaves that
+name pointing at nothing.  `shell-maker-buffer' would then
+`get-buffer-create' an empty impostor under the old name, and
+`shell-maker--process' come back nil from it, so the first prompt sets
+the shell busy and fails -- a side conversation stuck busy with nothing
+sent."
   (let ((suffix agent-shell-side-buffer-name-suffix)
         (name (buffer-name side-buffer)))
     (unless (or (string-empty-p suffix)
@@ -737,8 +746,10 @@ exists is renamed with the shell: agent-shell pairs the two by name."
                                 name))
       (let* ((viewport (agent-shell-side-compat-viewport-buffer side-buffer))
              (viewport-suffix (agent-shell-side-compat-viewport-suffix))
-             (new-name (with-current-buffer side-buffer
-                         (rename-buffer (concat name suffix) t))))
+             (new-name (progn
+                         (shell-maker-set-buffer-name side-buffer
+                                                      (concat name suffix))
+                         (buffer-name side-buffer))))
         (when (and viewport viewport-suffix (buffer-live-p viewport))
           (with-current-buffer viewport
             (rename-buffer (concat new-name viewport-suffix) t)))))))

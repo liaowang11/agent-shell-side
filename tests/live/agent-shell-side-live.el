@@ -524,6 +524,46 @@ approve a change to run it."
                            (agent-shell-side-live--excerpt answer 300))))))))
       (agent-shell-side-live--kill side parent))))
 
+(defun agent-shell-side-live--probe-renamed-side-still-sends ()
+  "Fork under a buffer-name format that drops the side marker, and send.
+
+`agent-shell-side' puts its marker in the config's `:buffer-name', which
+a custom `agent-shell-buffer-name-format' is free to ignore -- this one
+does, as a project-name-only format does.  The package then renames the
+shell itself, and a rename is where a side conversation can quietly lose
+its shell: shell-maker finds the buffer by the name it recorded, so a
+rename it was not told about leaves it creating an empty impostor under
+the old name and submitting into nothing.  The stubs cannot see this,
+which is why it is probed here: the fork is asked a question and has to
+answer it.
+
+The default format is exercised by every other probe, so only the
+dropping one is worth the tokens."
+  (let* ((agent-shell-buffer-name-format
+          (lambda (_agent-name project-name) project-name))
+         (parent (agent-shell-side-live--start-parent))
+         (side nil))
+    (unwind-protect
+        (progn
+          (agent-shell-side-live--start-conversation parent)
+          (setq side (agent-shell-side-live--fork
+                      parent
+                      "What token did I ask you to remember? Reply with just the token."))
+          (agent-shell-side-live--check
+           "a renamed side conversation keeps its shell"
+           (equal (buffer-local-value 'shell-maker--buffer-name-override side)
+                  (buffer-name side))
+           (format "shell-maker looks the shell up by this name; it holds %S for a buffer named %S"
+                   (buffer-local-value 'shell-maker--buffer-name-override side)
+                   (buffer-name side)))
+          (let ((answer (agent-shell-side-live--collect side)))
+            (agent-shell-side-live--check
+             "a renamed side conversation still sends its opening message"
+             (string-match-p (regexp-quote agent-shell-side-live-token) answer)
+             (format "asked the renamed fork for the planted token; it said: %s"
+                     (agent-shell-side-live--excerpt answer)))))
+      (agent-shell-side-live--kill side parent))))
+
 
 ;;; Runner
 
@@ -534,7 +574,8 @@ approve a change to run it."
     agent-shell-side-live--probe-handback-loses-its-parent
     agent-shell-side-live--probe-resume
     agent-shell-side-live--probe-refuses-a-turnless-conversation
-    agent-shell-side-live--probe-mid-turn-fork)
+    agent-shell-side-live--probe-mid-turn-fork
+    agent-shell-side-live--probe-renamed-side-still-sends)
   "Probes run by `agent-shell-side-live-run', in order.
 
 Each starts and kills its own shells, so one failure cannot leave the
