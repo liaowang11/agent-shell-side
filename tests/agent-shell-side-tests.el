@@ -821,6 +821,45 @@ it and the draft is left as the user wrote it."
         (should (equal (buffer-string) "my draft")))
       (should (agent-shell-side-tests--inserted-into side)))))
 
+(ert-deftest agent-shell-side-test-sent-opening-ending-in-n-gets-a-newline ()
+  "An opening message ending in the letter n still gets its trailing newline.
+
+Regression test: a prior version tested for a trailing newline with a
+regexp that actually matched a trailing \"n\" character, so a question
+like \"explain\" was mistaken for already having one."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-inserted nil)
+           (side (with-current-buffer parent
+                   (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                     (agent-shell-side "explain"))))
+           (viewport (agent-shell-side-tests--viewport-for side))
+           (handler (agent-shell-side-tests--ready-handler side)))
+      (funcall handler '((:event . prompt-ready)))
+      (with-current-buffer viewport
+        (should (equal (buffer-string) "explain\n"))))))
+
+(ert-deftest agent-shell-side-test-sent-opening-not-shown-when-refused ()
+  "A refused send leaves no fabricated \"sent\" message in the viewport.
+
+When the shell is busy, `agent-shell--insert-to-shell-buffer' refuses
+the send.  The viewport must not be switched to view mode carrying a
+message that never actually went out."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-inserted nil)
+           (side (with-current-buffer parent
+                   (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                     (agent-shell-side "why?"))))
+           (viewport (agent-shell-side-tests--viewport-for side))
+           (handler (agent-shell-side-tests--ready-handler side)))
+      (with-current-buffer side
+        (setq-local agent-shell-test-status 'busy))
+      (ignore-errors (funcall handler '((:event . prompt-ready))))
+      (with-current-buffer viewport
+        (should (derived-mode-p 'agent-shell-viewport-edit-mode)))
+      (should-not (agent-shell-side-tests--inserted-into side)))))
+
 (defmacro agent-shell-side-tests--silently (&rest body)
   "Evaluate BODY collecting `message' output instead of printing it.
 

@@ -409,9 +409,12 @@ own submit path would, so the opening turn is on screen."
                (setq sent t)
                (when (buffer-live-p side-buffer)
                  (agent-shell-side--unsubscribe side-buffer token)
+                 ;; Sent first: a refused send (the shell went busy) must
+                 ;; not leave the viewport showing a message that never
+                 ;; went out.
+                 (agent-shell-side-compat-send-to-shell side-buffer message)
                  (agent-shell-side-compat-show-sent-in-viewport
-                  side-buffer message)
-                 (agent-shell-side-compat-send-to-shell side-buffer message))))))
+                  side-buffer message))))))
     token))
 
 

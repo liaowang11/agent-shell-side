@@ -230,19 +230,30 @@ the opening message never touches the viewport, so without this the
 message and its answer are never on screen.
 
 A compose draft in progress is left alone: switching to view mode
-would wipe it, and the message still goes out behind it."
+would wipe it, and the message still goes out behind it.  A viewport
+already in view mode is left alone too: it is already showing a real
+conversation, and re-initializing it would wipe that instead."
+  (unless (fboundp 'agent-shell-viewport-view-mode)
+    (error "Missing agent-shell-viewport-view-mode; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (unless (fboundp 'agent-shell-viewport--initialize)
+    (error "Missing agent-shell-viewport--initialize; %s"
+           agent-shell-side-compat--upgrade-hint))
   (when-let* ((viewport (agent-shell-side-compat-viewport-buffer shell-buffer))
-              ((buffer-live-p viewport))
-              ;; Only an edit-mode viewport with nothing in it counts as
-              ;; no draft, matching `agent-shell-viewport--show-buffer'.
-              ((not (agent-shell-side-compat-viewport-draft-buffer shell-buffer))))
+              ((buffer-live-p viewport)))
     (with-current-buffer viewport
-      (agent-shell-viewport-view-mode)
-      ;; A trailing newline, because the prompt echoed here comes from a
-      ;; minibuffer read rather than a compose buffer, whose content
-      ;; carries one and is what the real submit path hands over.
-      (agent-shell-viewport--initialize
-       :prompt (if (string-match-p "\\n\\'" text) text (concat text "\n"))))))
+      (unless (or (derived-mode-p 'agent-shell-viewport-view-mode)
+                  ;; Only an edit-mode viewport with something in it
+                  ;; counts as a draft, matching
+                  ;; `agent-shell-viewport--show-buffer'.
+                  (and (derived-mode-p 'agent-shell-viewport-edit-mode)
+                       (> (buffer-size) 0)))
+        (agent-shell-viewport-view-mode)
+        ;; A trailing newline, because the prompt echoed here comes from a
+        ;; minibuffer read rather than a compose buffer, whose content
+        ;; carries one and is what the real submit path hands over.
+        (agent-shell-viewport--initialize
+         :prompt (if (string-suffix-p "\n" text) text (concat text "\n")))))))
 
 (defun agent-shell-side-compat-send-to-shell (shell-buffer text)
   "Submit TEXT to SHELL-BUFFER without moving the user\='s focus.
