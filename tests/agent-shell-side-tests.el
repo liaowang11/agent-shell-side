@@ -772,6 +772,55 @@ resend the question after every turn."
         (funcall handler '((:event . prompt-ready))))
       (should-not agent-shell-test-inserted))))
 
+(ert-deftest agent-shell-side-test-sent-opening-shows-in-the-viewport ()
+  "The auto-sent opening message is visible in a viewport side conversation.
+
+The side is shown while its fork is still in flight and the shell idle,
+which lands the viewport in compose mode.  Nothing would then show the
+sent message or the turn it starts.  As when the user submits from the
+viewport itself, sending switches it to view mode carrying the prompt,
+and the turn streams into it."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-inserted nil)
+           (side (with-current-buffer parent
+                   (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                     (agent-shell-side "why?"))))
+           (viewport (agent-shell-side-tests--viewport-for side))
+           (handler (agent-shell-side-tests--ready-handler side)))
+      (should handler)
+      (should viewport)
+      (should (with-current-buffer viewport
+                (derived-mode-p 'agent-shell-viewport-edit-mode)))
+      (funcall handler '((:event . prompt-ready)))
+      (with-current-buffer viewport
+        (should (derived-mode-p 'agent-shell-viewport-view-mode))
+        (should (equal (buffer-string) "why?\n")))
+      (should (agent-shell-side-tests--inserted-into side)))))
+
+(ert-deftest agent-shell-side-test-sent-opening-keeps-a-composing-viewport ()
+  "A draft the user started in the side's viewport survives the auto-send.
+
+The side's viewport opens as an empty compose buffer while the fork is
+in flight, so there is a window for typing into it.  Switching that
+draft to view mode would wipe it, so the opening message is sent behind
+it and the draft is left as the user wrote it."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-test-inserted nil)
+           (side (with-current-buffer parent
+                   (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                     (agent-shell-side "why?"))))
+           (viewport (agent-shell-side-tests--viewport-for side))
+           (handler (agent-shell-side-tests--ready-handler side)))
+      (with-current-buffer viewport
+        (insert "my draft"))
+      (funcall handler '((:event . prompt-ready)))
+      (with-current-buffer viewport
+        (should (derived-mode-p 'agent-shell-viewport-edit-mode))
+        (should (equal (buffer-string) "my draft")))
+      (should (agent-shell-side-tests--inserted-into side)))))
+
 (defmacro agent-shell-side-tests--silently (&rest body)
   "Evaluate BODY collecting `message' output instead of printing it.
 

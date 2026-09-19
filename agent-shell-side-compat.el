@@ -44,6 +44,8 @@
 (declare-function agent-shell--insert-to-shell-buffer "agent-shell")
 (declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
+(declare-function agent-shell-viewport-view-mode "agent-shell-viewport")
+(declare-function agent-shell-viewport--initialize "agent-shell-viewport")
 
 (defvar agent-shell--state)
 (defvar agent-shell-prefer-viewport-interaction)
@@ -215,6 +217,32 @@ it into a steer."
    :append text
    :edit t
    :disposition (agent-shell-side-compat--compose-disposition shell-buffer)))
+
+(defun agent-shell-side-compat-show-sent-in-viewport (shell-buffer text)
+  "Show TEXT as sent in SHELL-BUFFER's viewport, switched to view mode.
+
+What the viewport's own submit path does when the user sends from it:
+the compose buffer becomes a view of the conversation carrying the
+submitted prompt, and the turn streams into it.  A side conversation's
+viewport opens as an empty compose buffer, shown while its fork is
+still in flight and its shell idle, and the no-focus insert that sends
+the opening message never touches the viewport, so without this the
+message and its answer are never on screen.
+
+A compose draft in progress is left alone: switching to view mode
+would wipe it, and the message still goes out behind it."
+  (when-let* ((viewport (agent-shell-side-compat-viewport-buffer shell-buffer))
+              ((buffer-live-p viewport))
+              ;; Only an edit-mode viewport with nothing in it counts as
+              ;; no draft, matching `agent-shell-viewport--show-buffer'.
+              ((not (agent-shell-side-compat-viewport-draft-buffer shell-buffer))))
+    (with-current-buffer viewport
+      (agent-shell-viewport-view-mode)
+      ;; A trailing newline, because the prompt echoed here comes from a
+      ;; minibuffer read rather than a compose buffer, whose content
+      ;; carries one and is what the real submit path hands over.
+      (agent-shell-viewport--initialize
+       :prompt (if (string-match-p "\\n\\'" text) text (concat text "\n"))))))
 
 (defun agent-shell-side-compat-send-to-shell (shell-buffer text)
   "Submit TEXT to SHELL-BUFFER without moving the user\='s focus.

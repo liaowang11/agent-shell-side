@@ -605,6 +605,39 @@ the side conversation's pre-rename name sat in the buffer list.
    its way out. Every display path now passes an empty `:append`, which
    is how a caller says it brought its own text and there is none.
 
+## 12. The opening turn is shown in the viewport, 2026-09-19
+
+A live pi repro: fork with a question, the turn ran and answered, and
+the viewport sat as an empty compose buffer throughout.  A second repro
+against codex showed the same shape, so the usage limit that killed
+that turn was never the cause.
+
+The side is displayed synchronously after `agent-shell--start'
+returns, while the fork is still in flight and the shell idle, and an
+idle shell's viewport *is* its compose buffer: the show lands in edit
+mode.  `prompt-ready' fires seconds later and the opening message is
+submitted with `agent-shell--insert-to-shell-buffer' `:submit t
+:no-focus t', which writes to the shell buffer only.  Nothing ever
+switches the viewport, so neither the sent message nor the turn is on
+screen.
+
+1. **Sending switches the viewport to view mode.** What the viewport's
+   own submit path does on `agent-shell-viewport-compose-send': view
+   mode, initialized with the submitted prompt, and only then the
+   no-focus insert.  `--send-when-ready' now does the same before its
+   insert, through a shim (`--compat-show-sent-in-viewport'), so the
+   opening turn streams into the buffer the user is looking at.
+2. **A draft is never disturbed.** The fork-in-flight window leaves the
+   compose buffer open for typing, and section 10 item 3 already
+   established that switching a drafted compose buffer wipes it.  A
+   viewport holding a draft is left in edit mode; the message still
+   goes out behind it.
+
+Not addressed here: an agent that errors a turn server-side without
+answering `session/prompt' (codex-acp on a usage limit emits
+`_meta.codex.threadStatus' systemError and closes) leaves agent-shell
+busy forever with nothing shown.  That belongs upstream.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the

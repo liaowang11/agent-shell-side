@@ -104,6 +104,18 @@ that reaches a viewport when it meant to reach a shell fails here too."
       (setq-local agent-shell-viewport--compose-disposition disposition))
     buffer))
 
+(cl-defun agent-shell-viewport--initialize (&key prompt response)
+  "Initialize the current stub viewport, echoing PROMPT and RESPONSE.
+
+The real one also re-renders the header and caches the page position;
+the stub carries only the content, which is what the tests assert on."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (when prompt
+      (insert prompt))
+    (when response
+      (insert response))))
+
 (cl-defun agent-shell--insert-to-shell-buffer (&key text submit no-focus shell-buffer)
   "Record an insertion instead of touching a shell.
 

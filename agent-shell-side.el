@@ -365,7 +365,12 @@ question opens the side conversation with nothing sent."
 The fork is asynchronous, so the session does not exist yet when
 `agent-shell-side' returns.  `prompt-ready' is the public signal that it
 does.  It is emitted for every prompt, not only the first, so the
-subscription drops itself after firing."
+subscription drops itself after firing.
+
+Under viewport interaction the side was shown while its fork was still
+in flight and its shell idle, which put the viewport in compose mode.
+Sending switches it to view mode carrying MESSAGE, as the viewport's
+own submit path would, so the opening turn is on screen."
   (let ((token nil)
         (sent nil))
     (setq token
@@ -378,6 +383,8 @@ subscription drops itself after firing."
                (setq sent t)
                (when (buffer-live-p side-buffer)
                  (agent-shell-side--unsubscribe side-buffer token)
+                 (agent-shell-side-compat-show-sent-in-viewport
+                  side-buffer message)
                  (agent-shell-side-compat-send-to-shell side-buffer message))))))
     token))
 
