@@ -1000,6 +1000,55 @@ hide the buffers most in need of attention."
         (kill-buffer parent))
       (should (memq side (agent-shell-side--list-buffers))))))
 
+(ert-deftest agent-shell-side-test-parent-buffer-returns-the-parent ()
+  "The public accessor returns the same buffer the private field holds."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (should (eq (agent-shell-side-parent-buffer side) parent)))))
+
+(ert-deftest agent-shell-side-test-parent-buffer-nil-once-parent-is-killed ()
+  "The accessor stops answering once the parent it named is gone.
+
+Reading through it rather than the private field is what a caller wants:
+no separate liveness check, and no dependence on which package's
+kill-buffer-hook happens to run first."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (should-not (agent-shell-side-parent-buffer side)))))
+
+(ert-deftest agent-shell-side-test-parent-buffer-nil-for-a-plain-shell ()
+  "A shell that never forked a side conversation has no parent to report."
+  (agent-shell-side-tests--with-parent
+    (should-not (agent-shell-side-parent-buffer parent))))
+
+(ert-deftest agent-shell-side-test-children-finds-the-fork ()
+  "The public accessor finds the side conversation forked from a shell."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (should (equal (agent-shell-side-children parent) (list side))))))
+
+(ert-deftest agent-shell-side-test-children-empty-after-the-fork-is-killed ()
+  "A killed child no longer counts among its parent's children."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer side))
+      (should-not (agent-shell-side-children parent)))))
+
+(ert-deftest agent-shell-side-test-children-excludes-its-own-viewport ()
+  "A side conversation's viewport is not counted as a second child.
+
+`agent-shell-side-buffer-p' matches either a side's shell buffer or its
+viewport, but a caller listing sessions to act on wants each session
+named once."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (viewport (agent-shell-side-tests--viewport-for side)))
+      (should (equal (agent-shell-side-children parent) (list side)))
+      (should-not (memq viewport (agent-shell-side-children parent))))))
+
 (ert-deftest agent-shell-side-test-list-label-describes-the-parent ()
   "A candidate names its parent and reports the parent's state."
   (agent-shell-side-tests--with-parent

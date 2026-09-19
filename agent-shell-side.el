@@ -290,6 +290,32 @@ to dispose of."
     (or (and (buffer-local-value 'agent-shell-side--is-side buffer) t)
         (and (agent-shell-side--viewport-shell buffer) t))))
 
+(defun agent-shell-side-parent-buffer (&optional buffer)
+  "Return BUFFER's live parent shell, or nil.
+
+Defaults to the current buffer.  Nil once the parent has been killed, or
+when BUFFER is not a side conversation, so a caller never has to check
+`agent-shell-side-buffer-p' first or worry about kill-hook ordering
+between this package and its own bookkeeping."
+  (agent-shell-side--live-buffer
+   (buffer-local-value 'agent-shell-side--parent-buffer
+                       (or buffer (current-buffer)))))
+
+(defun agent-shell-side-children (&optional parent-buffer)
+  "Return the live side conversations forked from PARENT-BUFFER.
+
+Defaults to the current buffer.  Oldest first.  Scoped to
+`agent-shell-side--is-side', the marker set only on a side
+conversation's own shell buffer, so its paired viewport is never
+returned as a second child alongside it."
+  (let ((parent (or parent-buffer (current-buffer))))
+    (seq-filter (lambda (buffer)
+                  (eq (agent-shell-side-parent-buffer buffer) parent))
+                (seq-filter (lambda (buffer)
+                              (buffer-local-value 'agent-shell-side--is-side
+                                                  buffer))
+                            (agent-shell-side--list-buffers)))))
+
 (defun agent-shell-side--viewport-shell (buffer)
   "Return the side conversation whose viewport BUFFER is, or nil.
 

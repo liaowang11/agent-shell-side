@@ -147,6 +147,16 @@ a third thread; that does not port to Emacs, where switching buffers is
 constant and auto-discard would throw away work mid-thought. An idle reaper
 would do the same on a timer. So this reports and leaves the decision to you.
 
+### Reading the link from another package
+
+`agent-shell-side-parent-buffer` and `agent-shell-side-children` are the
+public accessors for the link between a side conversation and its parent,
+for a package that wants to draw the two together rather than as unrelated
+sessions — a sidebar nesting a side under its parent, say.
+`agent-shell-side-parent-buffer` answers nil once the parent it named is
+dead, so a caller never needs `agent-shell-side-buffer-p` first or has to
+worry about which package's `kill-buffer-hook` ran first.
+
 ## How the restriction works
 
 Two channels carry the side instructions, because no single one reaches every
