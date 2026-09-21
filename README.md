@@ -187,15 +187,37 @@ The inherited turns are hidden from the display, not from the model:
 `session/fork` does not replay history, so the side buffer starts empty while
 the agent keeps the whole transcript.
 
+## How the side is named
+
+The *buffer* name carries `agent-shell-side-buffer-name-suffix` (` [side]` by
+default), so a side conversation is recognisable in a buffer list.
+
+The *session* title is a separate thing: it is what the agent stores, what
+`session/list` reports, and what `claude --resume` shows. Left alone, an agent
+names a fork after the conversation it was forked from — claude-agent-acp's SDK
+derives `<parent title> (fork)` and never revisits it, which says nothing about
+what this conversation is for. So the fork request carries two more `_meta` keys:
+
+- **`_meta.sessionTitle`** — the first line of the question the side opens with,
+  used as its title straight away. Left out when you start a side blank.
+- **`_meta.generateSessionTitle`** — asks the agent to title the side after its
+  own turns once it has taken one. What you opened with is what you asked, not
+  what the conversation turned out to be about.
+
+Both are claude-agent-acp's, documented in its `docs/fork-title-extension.md`;
+an agent that does not know them names the fork its own way. Neither marks the
+title as a side conversation: a generated title would not carry a marker, and
+the buffer name already does.
+
 ## Agent support
 
 Requires an agent that advertises the ACP `session/fork` capability.
 
-| Adapter | `session/fork` | `session/delete` | `_meta.systemPrompt` |
-| --- | --- | --- | --- |
-| claude-agent-acp | yes | yes | yes |
-| pi-acp | yes | yes | no |
-| codex-acp | no | yes | no |
+| Adapter | `session/fork` | `session/delete` | `_meta.systemPrompt` | `_meta.sessionTitle` |
+| --- | --- | --- | --- | --- |
+| claude-agent-acp | yes | yes | yes | yes |
+| pi-acp | yes | yes | no | no |
+| codex-acp | no | yes | no | no |
 
 An agent without `session/fork` is refused with a message naming it. This
 refusal is not cosmetic: when a fork is requested from an agent that cannot do

@@ -638,6 +638,46 @@ answering `session/prompt' (codex-acp on a usage limit emits
 `_meta.codex.threadStatus' systemError and closes) leaves agent-shell
 busy forever with nothing shown.  That belongs upstream.
 
+## 13. A side named after its own question, 2026-09-21
+
+Every side conversation showed up as `<parent title> (fork)`, in the
+header, in `session/list`, and in `claude --resume`.  Three things
+compound into that:
+
+- The Agent SDK writes a `custom-title` entry on every fork, deriving
+  `<parent title> (fork)` unless the caller supplies a title.  An empty
+  one is not honored: the default is taken whenever the supplied title
+  trims to nothing.
+- claude-agent-acp's `SessionTitles` latches on any stored
+  `customTitle` at the first turn-end, taking it for a `/rename` or a
+  title it generated earlier.  A fork therefore never generates one.
+- A title set from Emacs alone does not hold: `turn-complete` refetches
+  through `session/list`, whose title follows the stored one, so the
+  agent's title wins back on the next turn.
+
+So the title has to be settled where the fork is made.
+
+1. **`_meta.sessionTitle` names the fork.** The first line of the
+   question the side opens with, whitespace collapsed, capped at the 256
+   characters the adapter stores.  Started blank, the key is left out
+   rather than sent empty, and the SDK's derived title stands for one
+   turn.
+2. **`_meta.generateSessionTitle` asks for a real one.** What the user
+   opened with is what they asked, not what the conversation turned out
+   to be about.  The adapter treats the title a fork was born with as
+   inherited rather than its own, and generates over it at the first
+   turn-end -- the same small-model call every new session gets.  A
+   `/rename` in between is still adopted: only the exact inherited
+   string is titled over.
+3. **No marker in the title.** The buffer name already carries
+   `agent-shell-side-buffer-name-suffix`, and a generated title would
+   not reproduce a marker anyway, so a title that announced itself as a
+   side would only do so until the agent replaced it.
+
+Both keys are claude-agent-acp's (`docs/fork-title-extension.md` there,
+shipped 2026-09-21); an agent that does not know them names the fork its
+own way, and this package is no worse off than before.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the

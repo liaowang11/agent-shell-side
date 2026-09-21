@@ -166,6 +166,71 @@ with its existing developer instructions."
 
 ;;; Derived config
 
+(ert-deftest agent-shell-side-test-session-title-takes-the-first-line ()
+  "The title is the question's first line, whatever follows it."
+  (should (equal (agent-shell-side--session-title
+                  "Why does toggling open edit mode?\n\nIt should just look.")
+                 "Why does toggling open edit mode?")))
+
+(ert-deftest agent-shell-side-test-session-title-skips-leading-blank-lines ()
+  "A question that starts with blank lines is still titled by its words."
+  (should (equal (agent-shell-side--session-title "\n \n  Why edit mode?  ")
+                 "Why edit mode?")))
+
+(ert-deftest agent-shell-side-test-session-title-collapses-whitespace ()
+  "A title is one line of single-spaced words: the agent stores it as one."
+  (should (equal (agent-shell-side--session-title "Why   edit \t mode?")
+                 "Why edit mode?")))
+
+(ert-deftest agent-shell-side-test-session-title-is-capped ()
+  "An opening paragraph on one line is cut to the length agents keep."
+  (let ((title (agent-shell-side--session-title (make-string 300 ?x))))
+    (should (equal (length title) 256))))
+
+(ert-deftest agent-shell-side-test-session-title-needs-a-question ()
+  "Nothing to title after means no title, not an empty one."
+  (should-not (agent-shell-side--session-title nil))
+  (should-not (agent-shell-side--session-title ""))
+  (should-not (agent-shell-side--session-title " \n\t ")))
+
+(ert-deftest agent-shell-side-test-session-meta-names-the-session ()
+  "A title rides `_meta.sessionTitle' on the fork request."
+  (let ((meta (agent-shell-side--session-meta nil "Why edit mode?")))
+    (should (equal (map-elt meta 'sessionTitle) "Why edit mode?"))))
+
+(ert-deftest agent-shell-side-test-session-meta-omits-a-missing-title ()
+  "Without a question the key is left out, rather than sent empty."
+  (let ((meta (agent-shell-side--session-meta nil)))
+    (should-not (assq 'sessionTitle meta))))
+
+(ert-deftest agent-shell-side-test-session-meta-asks-for-a-generated-title ()
+  "The agent is always asked to title the side after its own turns.
+
+A title taken from the question is provisional: it is what the user
+opened with, not what the conversation turned out to be about."
+  (should (eq (map-elt (agent-shell-side--session-meta nil) 'generateSessionTitle) t))
+  (should (eq (map-elt (agent-shell-side--session-meta nil "Why edit mode?")
+                       'generateSessionTitle)
+              t)))
+
+(ert-deftest agent-shell-side-test-session-meta-replaces-parent-title-keys ()
+  "The side's own title keys win, and are carried once."
+  (let* ((parent '((sessionTitle . "The parent's title")
+                   (generateSessionTitle . :false)))
+         (meta (agent-shell-side--session-meta parent "Why edit mode?")))
+    (should (equal (seq-count (lambda (entry) (eq (car entry) 'sessionTitle)) meta) 1))
+    (should (equal (seq-count (lambda (entry) (eq (car entry) 'generateSessionTitle)) meta) 1))
+    (should (equal (map-elt meta 'sessionTitle) "Why edit mode?"))
+    (should (eq (map-elt meta 'generateSessionTitle) t))))
+
+(ert-deftest agent-shell-side-test-session-meta-keeps-naming-the-agent-meta ()
+  "Naming the session leaves the rest of the parent's `_meta' alone."
+  (let* ((parent '((vendor . "keep me")))
+         (meta (agent-shell-side--session-meta parent "Why edit mode?")))
+    (should (equal (map-elt meta 'vendor) "keep me"))
+    (should (equal (map-nested-elt meta '(systemPrompt append))
+                   agent-shell-side-instructions))))
+
 (ert-deftest agent-shell-side-test-config-marks-buffer-name ()
   "The side shell announces itself in its buffer and mode-line names."
   (let* ((parent '((:identifier . claude-code)
@@ -408,6 +473,22 @@ The buffer looks like a started session on an agent that can fork."
     (should (equal (map-nested-elt agent-shell-test-started
                                    '(:config :buffer-name))
                    "Claude [side]"))))
+
+(ert-deftest agent-shell-side-test-start-names-the-forked-session ()
+  "The fork is named after the question it opens with.
+
+Left to itself an agent derives the fork's title from the parent's, which
+says nothing about what this conversation is for."
+  (agent-shell-side-tests--with-parent
+    (with-current-buffer parent
+      (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+        (agent-shell-side "Why does toggling open edit mode?")))
+    (should (equal (map-nested-elt agent-shell-test-started
+                                   '(:config :session-meta sessionTitle))
+                   "Why does toggling open edit mode?"))
+    (should (eq (map-nested-elt agent-shell-test-started
+                                '(:config :session-meta generateSessionTitle))
+                t))))
 
 (ert-deftest agent-shell-side-test-start-requires-a-session ()
   "A conversation that has not started yet cannot be forked."

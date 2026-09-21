@@ -36,6 +36,11 @@
 ;; Neither is a sandbox.  Like Codex's version, the restriction is
 ;; instruction text the agent is asked to follow.
 ;;
+;; The fork request also names the new session after the question it opens
+;; with, and asks the agent to title it after its own turns once it has
+;; taken one.  Left alone, an agent names a fork after the conversation it
+;; was forked from, which says nothing about what this one is for.
+;;
 ;; Requires an agent that advertises `session/fork'.  claude-agent-acp and
 ;; pi-acp do; codex-acp does not, as of this writing.
 ;;
@@ -466,7 +471,30 @@ boundary on one of those would mean the agent never sees it."
 
 ;;; Derived config
 
-(defun agent-shell-side--session-meta (parent-meta)
+(defconst agent-shell-side--session-title-limit 256
+  "How long a session title is worth sending.
+
+The cap claude-agent-acp puts on a title it stores; a longer one is cut
+there anyway.")
+
+(defun agent-shell-side--session-title (message)
+  "Return the title a side conversation opening with MESSAGE deserves.
+
+The question's first line, as one line of single-spaced words: what the
+user asked is what the conversation is about, and a stored title is one
+line.  Nil when MESSAGE asks nothing, which leaves the naming to the
+agent.  Capped at the length agents keep, so a question written as one
+long paragraph does not travel in full."
+  (when-let* ((line (and (stringp message)
+                         (seq-find (lambda (line) (not (string-blank-p line)))
+                                   (split-string message "\n"))))
+              (title (string-trim (replace-regexp-in-string "[[:space:]]+" " " line)))
+              ((not (string-empty-p title))))
+    (if (> (length title) agent-shell-side--session-title-limit)
+        (substring title 0 agent-shell-side--session-title-limit)
+      title)))
+
+(defun agent-shell-side--session-meta (parent-meta &optional title)
   "Return PARENT-META with the side instructions appended to the system prompt.
 
 PARENT-META is an agent config's `:session-meta', sent as `_meta' with
@@ -474,7 +502,15 @@ session-creating requests.  An `append' the parent already carries is
 kept ahead of the side instructions: it is the user's configuration, not
 a convention of the parent conversation, and the boundary text cancels
 only the latter.  Codex composes its developer instructions the same way.
-Other `systemPrompt' keys are carried over untouched."
+Other `systemPrompt' keys are carried over untouched.
+
+TITLE, when non-nil, names the forked session.  A fork is otherwise
+named after the conversation it came from, which says nothing about what
+this one is for.  `generateSessionTitle' asks the agent to title the side
+after its own turns once it has taken one: TITLE is what the user opened
+with, not what the conversation turned out to be about.  Both keys are
+claude-agent-acp's; an agent that does not know them names the fork its
+own way."
   (let* ((parent-prompt (map-elt parent-meta 'systemPrompt))
          (parent-append (map-elt parent-prompt 'append))
          (append (if (and (stringp parent-append)
@@ -483,17 +519,23 @@ Other `systemPrompt' keys are carried over untouched."
                              "\n\n"
                              agent-shell-side-instructions)
                    agent-shell-side-instructions)))
-    (cons (cons 'systemPrompt
-                (cons (cons 'append append)
-                      (assq-delete-all 'append (copy-alist parent-prompt))))
-          (assq-delete-all 'systemPrompt (copy-alist parent-meta)))))
+    (append
+     (list (cons 'systemPrompt
+                 (cons (cons 'append append)
+                       (assq-delete-all 'append (copy-alist parent-prompt)))))
+     (when title (list (cons 'sessionTitle title)))
+     (list (cons 'generateSessionTitle t))
+     (seq-reduce (lambda (meta key) (assq-delete-all key meta))
+                 '(systemPrompt sessionTitle generateSessionTitle)
+                 (copy-alist parent-meta)))))
 
-(defun agent-shell-side--config (parent-config)
+(defun agent-shell-side--config (parent-config &optional title)
   "Return an agent config for a side conversation forked from PARENT-CONFIG.
 
 Keeps the parent's agent, client, and authentication, and changes only
 what marks the shell as a side conversation: its names and its session
-metadata.  PARENT-CONFIG is left unchanged."
+metadata.  TITLE, when non-nil, names the forked session; see
+`agent-shell-side--session-meta'.  PARENT-CONFIG is left unchanged."
   (let ((config (copy-alist parent-config)))
     (setf (alist-get :buffer-name config)
           (concat (or (map-elt parent-config :buffer-name) "Agent")
@@ -502,7 +544,7 @@ metadata.  PARENT-CONFIG is left unchanged."
           (concat (or (map-elt parent-config :mode-line-name) "Agent")
                   agent-shell-side-buffer-name-suffix))
     (setf (alist-get :session-meta config)
-          (agent-shell-side--session-meta (map-elt parent-config :session-meta)))
+          (agent-shell-side--session-meta (map-elt parent-config :session-meta) title))
     config))
 
 (defun agent-shell-side--known-configs ()
@@ -1048,7 +1090,9 @@ cannot be forked costs no typing."
          (from-viewport (agent-shell-side-compat-viewport-buffer-p)))
     (let* ((default-directory (buffer-local-value 'default-directory parent-buffer))
            (side-buffer (agent-shell-side-compat-start-fork
-                         :config (agent-shell-side--config parent-config)
+                         :config (agent-shell-side--config
+                                  parent-config
+                                  (agent-shell-side--session-title message))
                          :fork-session-id parent-session-id
                          :outgoing-request-decorator
                          (agent-shell-side--make-decorator
