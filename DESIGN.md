@@ -678,6 +678,34 @@ Both keys are claude-agent-acp's (`docs/fork-title-extension.md` there,
 shipped 2026-09-21); an agent that does not know them names the fork its
 own way, and this package is no worse off than before.
 
+## 14. Toggling is reading, 2026-09-21
+
+Toggling to a side conversation put the cursor in an empty compose
+buffer instead of showing what the side had said.  Not a bug of this
+package: `agent-shell-viewport--show-buffer' is agent-shell's compose
+path, and its one branch that stays in view mode needs the shell busy
+with nothing to drop in.  Any other show, including this package's,
+ends in edit mode.  Section 12 leaned on exactly that to get an opening
+message typed; toggling wants the opposite.
+
+1. **Only toggling asks for view mode.** `--show' takes a VIEW flag and
+   `agent-shell-side-toggle' is the only caller passing it.  Starting a
+   side conversation still lands in the compose buffer, where there is
+   nothing to read yet, and the handback still composes its summary.
+   With both ends on screen nothing changes: that path selects a window
+   and never re-shows.
+2. **Through the viewport's own command.** `agent-shell-viewport-view-last'
+   is what the viewport's send path uses to leave a compose buffer, and
+   it does nothing when the conversation has taken no turn -- so a side
+   that has not answered yet stays composing.
+3. **A held draft is not viewed over.** Section 10 item 3 covered a
+   draft *in* the compose buffer.  A draft the viewport put aside to
+   show history is the other case: it lives in
+   `agent-shell-viewport--compose-snapshot', and the show that restores
+   it clears the snapshot, so switching to view mode afterwards wipes a
+   draft that can no longer be restored.  The snapshot is read before
+   the show, and the switch skipped when one was held.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the

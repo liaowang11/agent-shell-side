@@ -46,6 +46,7 @@
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 (declare-function agent-shell-viewport-view-mode "agent-shell-viewport")
 (declare-function agent-shell-viewport--initialize "agent-shell-viewport")
+(declare-function agent-shell-viewport-view-last "agent-shell-viewport")
 
 (defvar agent-shell--state)
 (defvar agent-shell-prefer-viewport-interaction)
@@ -167,6 +168,41 @@ progress.  Nil otherwise."
       (and (derived-mode-p 'agent-shell-viewport-edit-mode)
            (> (buffer-size) 0)
            viewport))))
+
+(defun agent-shell-side-compat-viewport-holds-draft-p (shell-buffer)
+  "Return non-nil when SHELL-BUFFER\\='s viewport has a draft put aside.
+
+A viewport showing history keeps the draft its compose buffer held in
+`agent-shell-viewport--compose-snapshot\\=', and the next show puts it back
+and forgets it was ever held.  A caller that means to switch to view
+mode after that show has to know, or it wipes a draft that can no longer
+be restored.
+
+Errors when a viewport exists but the variable does not: the draft would
+silently stop being noticed, which is the failure this exists to
+prevent."
+  (when-let* ((viewport (agent-shell-side-compat-viewport-buffer shell-buffer))
+              ((buffer-live-p viewport)))
+    (unless (boundp 'agent-shell-viewport--compose-snapshot)
+      (error "Missing agent-shell-viewport--compose-snapshot; %s"
+             agent-shell-side-compat--upgrade-hint))
+    (and (buffer-local-value 'agent-shell-viewport--compose-snapshot viewport) t)))
+
+(defun agent-shell-side-compat-show-last-in-viewport (shell-buffer)
+  "Show the last exchange in SHELL-BUFFER\\='s viewport, as reading it would.
+
+`agent-shell-viewport--show-buffer\\=' is agent-shell\\='s compose path: with the
+shell idle it opens the compose buffer, which is what a user who came to
+type wants and not what one who came to read does.  This is the same
+switch the viewport\\='s own send path makes, and it leaves the viewport
+alone when the conversation has taken no turn to show."
+  (unless (fboundp 'agent-shell-viewport-view-last)
+    (error "Missing agent-shell-viewport-view-last; %s"
+           agent-shell-side-compat--upgrade-hint))
+  (when-let* ((viewport (agent-shell-side-compat-viewport-buffer shell-buffer))
+              ((buffer-live-p viewport)))
+    (with-current-buffer viewport
+      (agent-shell-viewport-view-last))))
 
 (defun agent-shell-side-compat-show-in-viewport (shell-buffer)
   "Show SHELL-BUFFER through a viewport, as `agent-shell-fork' would.

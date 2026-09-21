@@ -107,10 +107,18 @@ they are not. An action that opens an ordinary window rather than a side window
 works too: closing frees that window when the parent is already on screen, and
 gives it to the parent otherwise.
 
+Under viewport interaction, toggling to a conversation that is off screen shows
+its last exchange rather than an empty compose buffer. agent-shell's viewport
+show is its compose path — with the shell idle it opens the compose buffer — and
+toggling is reading, not typing. Starting a side conversation still composes:
+there is nothing to read yet.
+
 A compose draft in progress is never disturbed by displaying its conversation:
 toggling to a parent or side whose compose buffer holds text shows that buffer as
 it stands, rather than re-entering the viewport, which while the shell is busy
-would flip it to view mode and lose the draft.
+would flip it to view mode and lose the draft. A draft the viewport put aside to
+show history is left alone for the same reason: the show puts it back, and
+switching to view mode afterwards would wipe it with nothing left to restore.
 
 If your layout lives in perspectives, tabs, or workspaces, add a function to
 `agent-shell-side-before-display-functions`. It is called with the shell buffer

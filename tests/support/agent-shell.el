@@ -65,6 +65,21 @@ The real `agent-shell-viewport--show-buffer' displays through
   "Stub of the compose buffer's send disposition.")
 (put 'agent-shell-viewport--compose-disposition 'permanent-local t)
 
+(defvar-local agent-shell-viewport--compose-snapshot nil
+  "Stub of the draft a viewport put aside to show history.")
+(put 'agent-shell-viewport--compose-snapshot 'permanent-local t)
+
+(defvar agent-shell-test-viewport-viewed nil
+  "Viewports `agent-shell-viewport-view-last' was called in, newest first.")
+
+(defun agent-shell-viewport-view-last ()
+  "Record a switch to view mode in the current stub viewport.
+
+The real one stays in edit mode when the shell has taken no turn yet;
+the stub always switches, since no test turns on that difference."
+  (push (current-buffer) agent-shell-test-viewport-viewed)
+  (agent-shell-viewport-view-mode))
+
 (defvar-local agent-shell-test-viewport-shell nil
   "In a stub viewport buffer, the shell buffer it stands for.")
 (put 'agent-shell-test-viewport-shell 'permanent-local t)

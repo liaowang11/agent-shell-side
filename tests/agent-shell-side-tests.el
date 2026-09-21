@@ -1815,6 +1815,116 @@ buffer's window finds nothing and re-displays every time."
               (should-not agent-shell-test-viewport-shown)))
         (agent-shell-side-tests--reset-windows)))))
 
+;;; Toggling looks at the other end, 2026-09-21
+
+(ert-deftest agent-shell-side-test-toggle-to-a-hidden-side-shows-its-last-turn ()
+  "Toggling to a side that is off screen lands in view mode, not compose.
+
+The viewport show is agent-shell's compose path: with the shell idle it
+opens the compose buffer, so toggling over to read an answer would put
+the cursor in an empty prompt instead."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-display-action '(display-buffer-same-window))
+           (agent-shell-side-display-action '(display-buffer-same-window))
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent))
+           (agent-shell-test-viewport-viewed nil))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent-viewport)
+            (should-not (get-buffer-window side-viewport))
+            (with-current-buffer parent (agent-shell-side-toggle))
+            (should (memq side-viewport agent-shell-test-viewport-viewed))
+            (should (eq (buffer-local-value 'major-mode side-viewport)
+                        'agent-shell-viewport-view-mode)))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-toggle-to-a-hidden-parent-shows-its-last-turn ()
+  "The parent is read the same way when toggling back to it."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-display-action '(display-buffer-same-window))
+           (agent-shell-side-display-action '(display-buffer-same-window))
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent))
+           (agent-shell-test-viewport-viewed nil))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) side-viewport)
+            (should-not (get-buffer-window parent-viewport))
+            (with-current-buffer side (agent-shell-side-toggle))
+            (should (memq parent-viewport agent-shell-test-viewport-viewed))
+            (should (eq (buffer-local-value 'major-mode parent-viewport)
+                        'agent-shell-viewport-view-mode)))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-toggle-leaves-a-draft-composing ()
+  "A draft in the compose buffer is shown as it stands, still in edit mode."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-display-action '(display-buffer-same-window))
+           (agent-shell-side-display-action '(display-buffer-same-window))
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent))
+           (agent-shell-test-viewport-viewed nil))
+      (unwind-protect
+          (progn
+            (with-current-buffer side-viewport (insert "half a question"))
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent-viewport)
+            (with-current-buffer parent (agent-shell-side-toggle))
+            (should-not agent-shell-test-viewport-viewed)
+            (should (eq (buffer-local-value 'major-mode side-viewport)
+                        'agent-shell-viewport-edit-mode)))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-toggle-leaves-a-held-draft-alone ()
+  "A draft the viewport put aside to show history is not viewed over.
+
+The show restores that draft into the compose buffer and forgets it was
+held, so switching to view mode afterwards would wipe it with nothing
+left to restore from."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-display-action '(display-buffer-same-window))
+           (agent-shell-side-display-action '(display-buffer-same-window))
+           (side (agent-shell-side-tests--start-side parent))
+           (side-viewport (agent-shell-side-tests--viewport-of side))
+           (parent-viewport (agent-shell-side-tests--viewport-of parent))
+           (agent-shell-test-viewport-viewed nil))
+      (unwind-protect
+          (progn
+            (with-current-buffer side-viewport
+              (agent-shell-viewport-view-mode)
+              (setq-local agent-shell-viewport--compose-snapshot
+                          '((:content . "half a question") (:location . 1))))
+            (setq agent-shell-test-viewport-viewed nil)
+            (agent-shell-side-tests--reset-windows)
+            (set-window-buffer (selected-window) parent-viewport)
+            (with-current-buffer parent (agent-shell-side-toggle))
+            (should-not agent-shell-test-viewport-viewed))
+        (agent-shell-side-tests--reset-windows)))))
+
+(ert-deftest agent-shell-side-test-starting-a-side-still-composes ()
+  "Starting one is the other case: there is nothing to read yet, so the
+compose buffer is what the user wants."
+  (agent-shell-side-tests--with-parent
+    (let* ((agent-shell-prefer-viewport-interaction t)
+           (agent-shell-display-action '(display-buffer-same-window))
+           (agent-shell-side-display-action '(display-buffer-same-window))
+           (agent-shell-test-viewport-viewed nil))
+      (unwind-protect
+          (progn
+            (agent-shell-side-tests--start-side parent)
+            (should-not agent-shell-test-viewport-viewed))
+        (agent-shell-side-tests--reset-windows)))))
+
 (ert-deftest agent-shell-side-test-dismiss-selects-the-visible-parent-viewport ()
   "Closing with the parent's viewport on screen moves there, without re-showing.
 

@@ -994,15 +994,16 @@ before asking the user for anything."
                   (or (map-elt parent-config :mode-line-name) "This agent")))
     parent-buffer))
 
-(defun agent-shell-side--display (buffer &optional viewport)
+(defun agent-shell-side--display (buffer &optional viewport view)
   "Show side conversation BUFFER, honoring `agent-shell-side-display-action'.
 
 With VIEWPORT, or when the user prefers viewport interaction, the buffer
 is shown through a viewport as `agent-shell-fork' would show it, with
-the action deciding where that viewport goes."
-  (agent-shell-side--show buffer agent-shell-side-display-action viewport))
+the action deciding where that viewport goes.  VIEW asks for the last
+exchange rather than a compose buffer; see `agent-shell-side--show'."
+  (agent-shell-side--show buffer agent-shell-side-display-action viewport view))
 
-(defun agent-shell-side--show (buffer action &optional viewport)
+(defun agent-shell-side--show (buffer action &optional viewport view)
   "Show shell BUFFER through `display-buffer' ACTION and select it.
 
 Runs `agent-shell-side-before-display-functions' first.  A window already
@@ -1013,7 +1014,13 @@ viewport is shown instead of the shell.  A compose draft in progress is
 displayed as it stands: the viewport show would rewrite it, and while
 the shell is busy that path flips the compose buffer to view mode and
 the draft is gone.  Otherwise the viewport show runs, since it is what
-refreshes a page, displaying through ACTION."
+refreshes a page, displaying through ACTION.
+
+VIEW is for a caller that brings the user to read rather than to type:
+the viewport show opens the compose buffer whenever the shell is idle,
+so the last exchange is shown after it instead.  A draft the viewport
+put aside to show history is left alone, since that show puts it back
+and switching to view mode then would wipe it."
   (run-hook-with-args 'agent-shell-side-before-display-functions buffer)
   (cond
    ((agent-shell-side--window buffer)
@@ -1022,10 +1029,13 @@ refreshes a page, displaying through ACTION."
     (if-let* ((draft (agent-shell-side-compat-viewport-draft-buffer buffer)))
         (when-let* ((window (display-buffer draft action)))
           (select-window window))
-      ;; The viewport show displays through `agent-shell-display-action'.
-      ;; Binding it is the one way to give ACTION a say there.
-      (let ((agent-shell-display-action action))
-        (agent-shell-side-compat-show-in-viewport buffer))))
+      (let ((held (agent-shell-side-compat-viewport-holds-draft-p buffer)))
+        ;; The viewport show displays through `agent-shell-display-action'.
+        ;; Binding it is the one way to give ACTION a say there.
+        (let ((agent-shell-display-action action))
+          (agent-shell-side-compat-show-in-viewport buffer))
+        (when (and view (not held))
+          (agent-shell-side-compat-show-last-in-viewport buffer)))))
    (t
     (when-let* ((window (display-buffer buffer action)))
       (select-window window)))))
@@ -1056,13 +1066,14 @@ With PARENT nil the window is left to Emacs."
           (delete-window window)
         (set-window-buffer window parent)))))
 
-(defun agent-shell-side--display-parent (buffer)
+(defun agent-shell-side--display-parent (buffer &optional view)
   "Show parent shell BUFFER where `agent-shell' puts its own buffers.
 
 Deliberately not `agent-shell-side-display-action': the parent is an
 ordinary shell, and the default side action would file it away in the
-strip meant for the side conversation."
-  (agent-shell-side--show buffer agent-shell-display-action))
+strip meant for the side conversation.  VIEW asks for the last exchange
+rather than a compose buffer; see `agent-shell-side--show'."
+  (agent-shell-side--show buffer agent-shell-display-action nil view))
 
 ;;;###autoload
 (defun agent-shell-side (&optional message)
@@ -1119,12 +1130,13 @@ cannot be forked costs no typing."
     ;; under the default side-window layout, where both are visible.
     (if-let* ((window (agent-shell-side--window target)))
         (select-window window)
-      ;; Otherwise put it where its kind belongs.  With the action set to
-      ;; `display-buffer-same-window' this reproduces the old swap, since
-      ;; displaying in the selected window is what a swap was.
+      ;; Otherwise put it where its kind belongs, showing what it last
+      ;; said rather than a compose buffer: toggling is reading.  With the
+      ;; action set to `display-buffer-same-window' this reproduces the old
+      ;; swap, since displaying in the selected window is what a swap was.
       (if (agent-shell-side-buffer-p target)
-          (agent-shell-side--display target)
-        (agent-shell-side--display-parent target)))))
+          (agent-shell-side--display target nil t)
+        (agent-shell-side--display-parent target t)))))
 
 (defun agent-shell-side--resolve-side ()
   "Return the side conversation this buffer is one end of.
