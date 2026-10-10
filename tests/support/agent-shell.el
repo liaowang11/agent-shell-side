@@ -94,12 +94,17 @@ the stub always switches, since no test turns on that difference."
 
 (cl-defun agent-shell-viewport--show-buffer (&rest args
                                              &key shell-buffer submit no-focus
-                                             disposition
+                                             append edit disposition
                                              &allow-other-keys)
   "Record a viewport display, creating the stub viewport buffer on demand.
 
 Refuses SUBMIT and NO-FOCUS exactly as the real one does, so a caller
-that reaches a viewport when it meant to reach a shell fails here too."
+that reaches a viewport when it meant to reach a shell fails here too.
+
+Like the real one, EDIT turns a view-mode viewport into an empty compose
+buffer, APPEND lands at the end of a compose buffer after a blank line,
+point is left where it was, and the return value is an alist naming the
+buffer and the inserted span."
   (when submit
     (error "Not yet supported"))
   (when no-focus
@@ -114,10 +119,26 @@ that reaches a viewport when it meant to reach a shell fails here too."
                         (agent-shell-viewport-edit-mode)
                         (setq-local agent-shell-test-viewport-shell shell-buffer))
                       buffer))))
-    ;; Written on every call, nil included, as the real one is.
-    (with-current-buffer buffer
-      (setq-local agent-shell-viewport--compose-disposition disposition))
-    buffer))
+    (let ((start nil)
+          (end nil))
+      (with-current-buffer buffer
+        (when (and edit (not (derived-mode-p 'agent-shell-viewport-edit-mode)))
+          (agent-shell-viewport-edit-mode)
+          (let ((inhibit-read-only t))
+            (erase-buffer)))
+        (when (and append
+                   (not (string-empty-p append))
+                   (derived-mode-p 'agent-shell-viewport-edit-mode))
+          (save-excursion
+            (goto-char (point-max))
+            (setq start (point))
+            (insert "\n\n" append)
+            (setq end (point))))
+        ;; Written on every call, nil included, as the real one is.
+        (setq-local agent-shell-viewport--compose-disposition disposition))
+      `((:buffer . ,buffer)
+        (:start . ,start)
+        (:end . ,end)))))
 
 (cl-defun agent-shell-viewport--initialize (&key prompt response)
   "Initialize the current stub viewport, echoing PROMPT and RESPONSE.

@@ -706,6 +706,42 @@ message typed; toggling wants the opposite.
    draft that can no longer be restored.  The snapshot is read before
    the show, and the switch skipped when one was held.
 
+## 15. Quoting a region, 2026-10-10
+
+Two gaps: the question prompt gave no way to check what was being
+quoted, and an open side conversation could not be handed another
+passage.
+
+1. **The highlight is the preview.** The region used to be deactivated
+   before the question was read, so the one faithful view of it went
+   away at the moment it was wanted. It now stays active until the
+   question returns, and a quit leaves it selected. The prompt adds a
+   one-line summary -- line count, the first line's start, the last
+   line's end -- rather than the text itself: the minibuffer is no
+   place to review long text (as for the handback), and the edges are what show
+   a selection is the intended one.
+2. **Sending a region composes; it never submits.** Same reasoning as
+   the handback: a busy conversation cannot take text at its prompt,
+   and send, queue, or steer is the user's choice. Appending through
+   `compose-in-viewport' keeps an existing draft's disposition. The
+   viewport's own insertion leaves point where it was, so point is
+   moved below the quote by hand.
+3. **One command, both directions.** The side keys work from either
+   end, so `C-c C-r' in a side conversation quotes into its parent
+   rather than being dead there.
+4. **Picking among several is a cross-conversation choice.** A shell
+   links one side conversation at a time, and a resumed one records no
+   parent, so from a shell the target is never ambiguous. Several
+   targets exist only across conversations. The picker therefore
+   offers every open side conversation, and is reached from a buffer
+   that is not a conversation, or with a prefix argument from a shell.
+   A non-conversation buffer is told apart explicitly:
+   `agent-shell-shell-buffer' would answer for it with the project's
+   shell.
+5. **`C-c C-r' shadows `comint-show-output'** in the shell buffer.
+   That command scrolls to the last output, which is rarely useful in
+   an agent shell; losing it under the side keys is cheap.
+
 ## Order of work
 
 1. Item 1's live test file, including the item 2 probe. It is the

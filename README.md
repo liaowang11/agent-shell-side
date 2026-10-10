@@ -36,6 +36,7 @@ name, so it can be told apart in buffer lists.
 | `agent-shell-side` | | Fork this conversation into a side one and switch to it |
 | `agent-shell-side-toggle` | `C-c C-b` | Move between the side conversation and its parent |
 | `agent-shell-side-conclude` | `C-c C-q` | Summarise the side conversation into the parent, then close it |
+| `agent-shell-side-send-region` | `C-c C-r` | Quote the region into the other end's compose buffer; with a prefix argument, pick any open side conversation |
 | `agent-shell-side-dismiss` | `C-c C-k` | Close the side conversation, discarding what it learned |
 | `agent-shell-side-resume` | | Reopen a side conversation that was kept; with a prefix argument, from any conversation |
 | `agent-shell-side-list` | | Switch to one of the side conversations that are open |
@@ -46,7 +47,23 @@ name, so it can be told apart in buffer lists.
 Select the passage in the parent conversation, then run `agent-shell-side`. The
 selection is carried in as a markdown block quote and you are asked for your
 question, so the side conversation opens pointing at exactly the part you meant.
-An empty question opens it blank.
+An empty question opens it blank. While you type the question the selection
+stays highlighted, and the prompt names its line count and its first and last
+lines, so you can check its edges before anything is sent. `C-g` leaves it
+selected.
+
+Once a side conversation is open, `agent-shell-side-send-region` (`C-c C-r`)
+quotes another passage into it. The quote lands in the side's compose buffer,
+after any draft, with point below it for your question, and nothing is sent
+until you send it. Run from the side conversation, it quotes into the parent
+instead. From a shell with no side conversation open, it starts one, as
+`agent-shell-side` does.
+
+From a buffer that is not a conversation, such as a source file, it goes to the
+side conversation that is open, asking which when there are several. A shell
+links to one side conversation at a time, so with a prefix argument it asks
+too, offering every open one. The side keys are off in viewport buffers, so
+from a viewport run it with `M-x`.
 
 ### Carrying findings back
 

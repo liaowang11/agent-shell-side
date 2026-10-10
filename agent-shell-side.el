@@ -378,16 +378,50 @@ user's own words.  Either may be nil or blank."
     (prog1 (buffer-substring-no-properties (region-beginning) (region-end))
       (deactivate-mark))))
 
+(defconst agent-shell-side--summary-width 30
+  "Columns kept of each end of a selection summarized in a prompt.")
+
+(defun agent-shell-side--selection-summary (text)
+  "Return a one-line summary of selected TEXT, for a prompt.
+
+The line count and the first and last lines, each cut to
+`agent-shell-side--summary-width' columns.  The first line keeps its
+start and the last its end: the two edges are what tell a user the
+selection is the one they meant.  Not the whole text, which can be long
+and is still on screen, highlighted, while the prompt is up."
+  (let* ((lines (split-string (string-trim text) "\n"))
+         (width agent-shell-side--summary-width)
+         (head (truncate-string-to-width (string-trim (car lines)) width
+                                         nil nil "…"))
+         (tail (string-trim (car (last lines))))
+         (tail-width (string-width tail)))
+    (when (> tail-width width)
+      (setq tail (concat "…" (truncate-string-to-width
+                              tail tail-width (- tail-width (1- width))))))
+    (if (cdr lines)
+        (format "%d lines \"%s\" … \"%s\"" (length lines) head tail)
+      (format "1 line \"%s\"" head))))
+
 (defun agent-shell-side--read-opening-message ()
   "Read the message a side conversation should open with, or nil for none.
 
 A selection in the parent conversation is carried in as a block quote, so
 a question about part of an answer can point at that part.  An empty
-question opens the side conversation with nothing sent."
-  (let* ((selection (agent-shell-side--region-text))
-         (question (read-string (if selection
-                                    "Ask about the selection (empty to just quote it): "
-                                  "Side conversation (empty to start blank): "))))
+question opens the side conversation with nothing sent.
+
+The selection stays highlighted while the question is read, and the
+prompt summarizes it, so its boundaries can be checked before anything
+is sent.  Quitting the question leaves it selected."
+  (let* ((selection (when (use-region-p)
+                      (buffer-substring-no-properties (region-beginning)
+                                                      (region-end))))
+         (question (read-string
+                    (if selection
+                        (format "Quoting %s\nAsk about it (empty to just quote it): "
+                                (agent-shell-side--selection-summary selection))
+                      "Side conversation (empty to start blank): "))))
+    (when selection
+      (deactivate-mark))
     (agent-shell-side--opening-message selection question)))
 
 (defun agent-shell-side--send-when-ready (side-buffer message)
@@ -759,7 +793,8 @@ ROLE is `side' in a side conversation, `parent' in a shell that has one."
   :doc "Keymap for `agent-shell-side-mode'."
   "C-c C-b" #'agent-shell-side-toggle
   "C-c C-k" #'agent-shell-side-dismiss
-  "C-c C-q" #'agent-shell-side-conclude)
+  "C-c C-q" #'agent-shell-side-conclude
+  "C-c C-r" #'agent-shell-side-send-region)
 
 (defun agent-shell-side--key-for (command)
   "Return COMMAND's key in `agent-shell-side-mode-map', described for humans.
@@ -1197,6 +1232,89 @@ Discards whatever was learned.  To carry it back to the parent
 conversation instead, use `agent-shell-side-conclude'."
   (interactive)
   (agent-shell-side--close (agent-shell-side--resolve-side)))
+
+
+;;; Quoting a region into the other end
+
+(defun agent-shell-side--region-shell ()
+  "Return the shell the current buffer is a conversation buffer of, or nil.
+
+Only a shell buffer or a viewport counts.  `agent-shell-shell-buffer'
+answers from any buffer, falling back to the project's shell, but a
+region in a file is not part of any conversation, so it has no other end
+to go to."
+  (when (or (derived-mode-p 'agent-shell-mode)
+            (agent-shell-side-compat-viewport-buffer-p))
+    (agent-shell-shell-buffer :no-error t :no-create t)))
+
+(defun agent-shell-side--read-side (&optional always-ask)
+  "Return an open side conversation for a region to go to.
+
+A lone one is used without asking, unless ALWAYS-ASK."
+  (let ((candidates (agent-shell-side--list-candidates)))
+    (unless candidates
+      (user-error "No side conversations are open"))
+    (if (and (not always-ask) (null (cdr candidates)))
+        (cdar candidates)
+      (let ((choice (completing-read "Quote into side conversation: "
+                                     candidates nil t)))
+        (or (agent-shell-side--live-buffer (cdr (assoc choice candidates)))
+            (user-error "That side conversation is gone"))))))
+
+(defun agent-shell-side--quote-into (shell-buffer)
+  "Quote the region into SHELL-BUFFER's compose buffer, with point below it.
+
+A compose buffer, as for handed-back findings: it takes text while the
+conversation is busy, and its own keys send, queue, or steer.  The
+quote is appended to any draft already there, which keeps that draft's
+disposition.  Point goes on the blank line after it, where the question
+about it is written."
+  (let* ((quoted (concat (agent-shell-side--quote (agent-shell-side--region-text))
+                         "\n\n"))
+         (inserted (agent-shell-side-compat-compose-in-viewport shell-buffer quoted))
+         (buffer (map-elt inserted :buffer))
+         (end (map-elt inserted :end)))
+    (when (and (buffer-live-p buffer) end)
+      (with-current-buffer buffer
+        (goto-char end))
+      (when-let* ((window (get-buffer-window buffer)))
+        (set-window-point window end)))))
+
+;;;###autoload
+(defun agent-shell-side-send-region (&optional pick)
+  "Quote the region into the other end of a side conversation.
+
+From a shell, it goes to that shell's side conversation, and with none
+open it starts one that opens with the region, as `agent-shell-side'
+does.  From a side conversation, it goes back to the shell it was forked
+from.  From any other buffer, it goes to the side conversation that is
+open, asking which when there are several.  With a prefix argument,
+PICK, a shell asks too, offering every open side conversation; a side
+conversation always sends to its parent.
+
+The quote lands in a compose buffer, never sent, with point below it for
+the question.  Under the side keys this is
+\\<agent-shell-side-mode-map>\\[agent-shell-side-send-region].  The mode is off in viewport buffers, so
+from one use \\[execute-extended-command] or a key of your own."
+  (interactive "P")
+  (unless (use-region-p)
+    (user-error "No region to quote"))
+  (when (string-blank-p (buffer-substring-no-properties (region-beginning)
+                                                        (region-end)))
+    (user-error "The region is blank"))
+  (let ((shell (agent-shell-side--region-shell)))
+    (cond
+     ((and shell (agent-shell-side-buffer-p shell))
+      (agent-shell-side--quote-into
+       (or (agent-shell-side-parent-buffer shell)
+           (user-error "The conversation this was forked from is gone"))))
+     ((and shell (not pick))
+      (if-let* ((side (agent-shell-side--live-buffer
+                       (buffer-local-value 'agent-shell-side--side-buffer shell))))
+          (agent-shell-side--quote-into side)
+        (call-interactively #'agent-shell-side)))
+     (t
+      (agent-shell-side--quote-into (agent-shell-side--read-side pick))))))
 
 
 ;;; Handing findings back

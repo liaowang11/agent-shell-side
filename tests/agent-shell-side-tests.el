@@ -1783,7 +1783,7 @@ meant for the side conversation."
 
 (defun agent-shell-side-tests--viewport-of (shell)
   "Return the stub viewport buffer standing for SHELL, creating it if needed."
-  (agent-shell-viewport--show-buffer :shell-buffer shell))
+  (map-elt (agent-shell-viewport--show-buffer :shell-buffer shell) :buffer))
 
 (ert-deftest agent-shell-side-test-toggle-selects-the-visible-viewport ()
   "Under viewport interaction, a visible viewport counts as the other end.
@@ -2486,6 +2486,215 @@ own text and there is none."
       (should (equal (length agent-shell-test-viewport-calls) 1))
       (should (equal (plist-get (car agent-shell-test-viewport-calls) :append)
                      "")))))
+
+;;; Quoting a region, 2026-10-10
+
+(defun agent-shell-side-tests--select-text (text)
+  "Insert TEXT at the end of the current buffer and make it the active region."
+  (goto-char (point-max))
+  (let ((start (point)))
+    (insert text)
+    (set-mark start)
+    (activate-mark)))
+
+(ert-deftest agent-shell-side-test-selection-summary ()
+  "The summary names the line count and the selection's two ends."
+  (should (equal (agent-shell-side--selection-summary "just this")
+                 "1 line \"just this\""))
+  (should (equal (agent-shell-side--selection-summary "\nfirst\nmiddle\nlast\n\n")
+                 "3 lines \"first\" … \"last\"")))
+
+(ert-deftest agent-shell-side-test-selection-summary-truncates-both-ends ()
+  "A long first line keeps its start, a long last line keeps its end.
+
+Those are the two edges of the selection, which is what the summary is
+there to confirm."
+  (let ((summary (agent-shell-side--selection-summary
+                  (concat "head" (make-string 80 ?a) "\n"
+                          (make-string 80 ?b) "tail"))))
+    (should (string-match-p "\"heada*…\"" summary))
+    (should (string-match-p "\"…b*tail\"" summary))
+    (should (< (string-width summary) 90))))
+
+(ert-deftest agent-shell-side-test-question-prompt-previews-the-selection ()
+  "The question prompt summarizes the selection, which stays highlighted.
+
+The highlighted region is the most faithful preview there is, so it is
+only deactivated once the question has been read."
+  (agent-shell-side-tests--with-parent
+    (with-current-buffer parent
+      (agent-shell-side-tests--select-text
+       "The fork is async\nso we wait\nuntil it is ready")
+      (let ((prompt nil)
+            (active-while-asking nil))
+        (cl-letf (((symbol-function 'read-string)
+                   (lambda (text &rest _)
+                     (setq prompt text
+                           active-while-asking (region-active-p))
+                     "why?")))
+          (should (equal (agent-shell-side--read-opening-message)
+                         (concat "> The fork is async\n> so we wait\n"
+                                 "> until it is ready\n\nwhy?"))))
+        (should active-while-asking)
+        (should-not (region-active-p))
+        (should (string-match-p "3 lines" prompt))
+        (should (string-match-p "The fork is async" prompt))
+        (should (string-match-p "until it is ready" prompt))
+        (should (string-suffix-p ": " prompt))))))
+
+(ert-deftest agent-shell-side-test-quitting-the-question-keeps-the-region ()
+  "Quitting the question leaves the selection active, to adjust and retry."
+  (agent-shell-side-tests--with-parent
+    (with-current-buffer parent
+      (agent-shell-side-tests--select-text "keep me")
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) (signal 'quit nil))))
+        ;; Caught by hand: `should-error' only catches `error', and ERT
+        ;; reports a stray quit as neither a pass nor a failure.
+        (should (eq (condition-case nil
+                        (progn (agent-shell-side--read-opening-message) 'returned)
+                      (quit 'quit))
+                    'quit)))
+      (should (region-active-p)))))
+
+(ert-deftest agent-shell-side-test-send-region-quotes-into-the-side ()
+  "From the parent, the region lands quoted in the side's compose buffer.
+
+Never submitted: the user writes the question under the quote, and the
+compose buffer's own keys send, queue, or steer.  Point ends below the
+quote, where that question goes."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-test-viewport-calls nil)
+          (agent-shell-test-inserted nil))
+      (with-current-buffer side
+        (setq-local agent-shell-test-status 'busy))
+      (with-current-buffer parent
+        (agent-shell-side-tests--select-text "line one\nline two")
+        (agent-shell-side-send-region)
+        (should-not (region-active-p)))
+      (let ((call (car agent-shell-test-viewport-calls)))
+        (should (eq (plist-get call :shell-buffer) side))
+        (should (plist-get call :edit))
+        (should-not (plist-get call :submit))
+        (should (equal (plist-get call :append) "> line one\n> line two\n\n")))
+      (should-not agent-shell-test-inserted)
+      (with-current-buffer (agent-shell-side-tests--viewport-for side)
+        (should (= (point) (point-max)))
+        (should (string-suffix-p "> line two\n\n" (buffer-string)))))))
+
+(ert-deftest agent-shell-side-test-send-region-without-a-side-forks-one ()
+  "With no side open, sending a region starts one that opens with it."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-test-inserted nil))
+      (with-current-buffer parent
+        (agent-shell-side-tests--select-text "pick me")
+        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "why?"))
+                  ((symbol-function 'agent-shell-side--display) #'ignore))
+          (agent-shell-side-send-region)))
+      (let ((side (buffer-local-value 'agent-shell-side--side-buffer parent)))
+        (should (buffer-live-p side))
+        (funcall (agent-shell-side-tests--ready-handler side)
+                 '((:event . prompt-ready)))
+        (should (equal (map-elt (car agent-shell-test-inserted) :text)
+                       "> pick me\n\nwhy?"))))))
+
+(ert-deftest agent-shell-side-test-send-region-from-a-side-goes-to-the-parent ()
+  "From a side conversation, the region goes back to the parent's compose buffer."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-test-viewport-calls nil))
+      (with-current-buffer side
+        (agent-shell-side-tests--select-text "a finding")
+        (agent-shell-side-send-region))
+      (let ((call (car agent-shell-test-viewport-calls)))
+        (should (eq (plist-get call :shell-buffer) parent))
+        (should (plist-get call :edit))
+        (should (equal (plist-get call :append) "> a finding\n\n"))))))
+
+(ert-deftest agent-shell-side-test-send-region-from-an-orphan-side-refuses ()
+  "A side whose parent is gone has nowhere to send the region."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent)))
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer parent))
+      (with-current-buffer side
+        (agent-shell-side-tests--select-text "a finding")
+        (should-error (agent-shell-side-send-region) :type 'user-error)
+        (should (region-active-p))))))
+
+(ert-deftest agent-shell-side-test-send-region-needs-a-region ()
+  "Without a region there is nothing to quote."
+  (agent-shell-side-tests--with-parent
+    (agent-shell-side-tests--start-side parent)
+    (with-current-buffer parent
+      (deactivate-mark)
+      (should-error (agent-shell-side-send-region) :type 'user-error))))
+
+(ert-deftest agent-shell-side-test-send-region-with-prefix-picks-any-side ()
+  "A prefix argument offers every open side conversation, not just this one's."
+  (agent-shell-side-tests--with-parent
+    (let* ((mine (agent-shell-side-tests--start-side parent))
+           (other-parent (agent-shell-side-tests--make-parent "parent-2"))
+           (theirs (agent-shell-side-tests--start-side other-parent))
+           (agent-shell-test-viewport-calls nil)
+           (offered nil))
+      (with-current-buffer parent
+        (agent-shell-side-tests--select-text "share this")
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (setq offered (mapcar #'cdr collection))
+                     (car (rassq theirs collection)))))
+          (agent-shell-side-send-region '(4))))
+      (should (memq mine offered))
+      (should (memq theirs offered))
+      (should (eq (plist-get (car agent-shell-test-viewport-calls) :shell-buffer)
+                  theirs)))))
+
+(ert-deftest agent-shell-side-test-send-region-from-elsewhere-with-one-side ()
+  "Outside any shell, a lone side conversation is used without asking."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-test-viewport-calls nil))
+      (with-temp-buffer
+        (agent-shell-side-tests--select-text "some code")
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) (ert-fail "asked with one candidate"))))
+          (agent-shell-side-send-region)))
+      (should (eq (plist-get (car agent-shell-test-viewport-calls) :shell-buffer)
+                  side)))))
+
+(ert-deftest agent-shell-side-test-send-region-from-elsewhere-asks-among-many ()
+  "Outside any shell, several side conversations are offered to pick from."
+  (agent-shell-side-tests--with-parent
+    (let* ((mine (agent-shell-side-tests--start-side parent))
+           (other-parent (agent-shell-side-tests--make-parent "parent-2"))
+           (theirs (agent-shell-side-tests--start-side other-parent))
+           (agent-shell-test-viewport-calls nil)
+           (offered nil))
+      (with-temp-buffer
+        (agent-shell-side-tests--select-text "some code")
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (setq offered (mapcar #'cdr collection))
+                     (car (rassq mine collection)))))
+          (agent-shell-side-send-region)))
+      (should (equal (length offered) 2))
+      (should (memq theirs offered))
+      (should (eq (plist-get (car agent-shell-test-viewport-calls) :shell-buffer)
+                  mine)))))
+
+(ert-deftest agent-shell-side-test-send-region-from-elsewhere-without-sides ()
+  "Outside any shell with no side conversation open, there is nowhere to send."
+  (agent-shell-side-tests--with-parent
+    (with-temp-buffer
+      (agent-shell-side-tests--select-text "some code")
+      (should-error (agent-shell-side-send-region) :type 'user-error))))
+
+(ert-deftest agent-shell-side-test-send-region-is-bound ()
+  "The command has a key in the side mode map, at both ends."
+  (should (eq (keymap-lookup agent-shell-side-mode-map "C-c C-r")
+              #'agent-shell-side-send-region)))
 
 (provide 'agent-shell-side-tests)
 ;;; agent-shell-side-tests.el ends here
