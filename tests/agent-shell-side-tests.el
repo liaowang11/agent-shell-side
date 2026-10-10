@@ -2691,6 +2691,32 @@ quote, where that question goes."
       (agent-shell-side-tests--select-text "some code")
       (should-error (agent-shell-side-send-region) :type 'user-error))))
 
+(ert-deftest agent-shell-side-test-send-region-from-the-parent-viewport ()
+  "A region in the parent's viewport goes to the side, as one in its shell does."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (viewport (agent-shell-side-tests--viewport-of parent))
+           (agent-shell-test-viewport-calls nil))
+      (with-current-buffer viewport
+        (agent-shell-viewport-view-mode)
+        (agent-shell-side-tests--select-text "an answer")
+        (agent-shell-side-send-region))
+      (should (eq (plist-get (car agent-shell-test-viewport-calls) :shell-buffer)
+                  side)))))
+
+(ert-deftest agent-shell-side-test-send-region-from-the-side-viewport ()
+  "A region in the side's viewport goes back to the parent."
+  (agent-shell-side-tests--with-parent
+    (let* ((side (agent-shell-side-tests--start-side parent))
+           (viewport (agent-shell-side-tests--viewport-of side))
+           (agent-shell-test-viewport-calls nil))
+      (with-current-buffer viewport
+        (agent-shell-viewport-view-mode)
+        (agent-shell-side-tests--select-text "a finding")
+        (agent-shell-side-send-region))
+      (should (eq (plist-get (car agent-shell-test-viewport-calls) :shell-buffer)
+                  parent)))))
+
 (ert-deftest agent-shell-side-test-send-region-is-bound ()
   "The command has a key in the side mode map, at both ends."
   (should (eq (keymap-lookup agent-shell-side-mode-map "C-c C-r")
