@@ -712,14 +712,14 @@ Two gaps: the question prompt gave no way to check what was being
 quoted, and an open side conversation could not be handed another
 passage.
 
-1. **The highlight is the preview.** The region used to be deactivated
-   before the question was read, so the one faithful view of it went
-   away at the moment it was wanted. It now stays active until the
-   question returns, and a quit leaves it selected. The prompt adds a
-   one-line summary -- line count, the first line's start, the last
-   line's end -- rather than the text itself: the minibuffer is no
-   place to review long text (as for the handback), and the edges are what show
-   a selection is the intended one.
+1. **The highlight is the preview** (superseded by section 16). The
+   region used to be deactivated before the question was read, so the
+   one faithful view of it went away at the moment it was wanted. It now
+   stays active until the question returns, and a quit leaves it
+   selected. The prompt adds a one-line summary -- line count, the first
+   line's start, the last line's end -- rather than the text itself: the
+   minibuffer is no place to review long text (as for the handback), and
+   the edges are what show a selection is the intended one.
 2. **Sending a region composes; it never submits.** Same reasoning as
    the handback: a busy conversation cannot take text at its prompt,
    and send, queue, or steer is the user's choice. Appending through
@@ -741,6 +741,54 @@ passage.
 5. **`C-c C-r' shadows `comint-show-output'** in the shell buffer.
    That command scrolls to the last output, which is rarely useful in
    an agent shell; losing it under the side keys is cheap.
+
+## 16. Asking in the compose buffer, 2026-10-13
+
+The question prompt could not take an image. On emacs-mac, Cmd-v of a
+clipboard image inserts a space carrying an in-memory `display' image;
+`read-string' strips text properties, so the image is gone before the
+question returns. And agent-shell only sends an image that is an
+`@path' mention of a saved file anyway. The surface agent-shell already
+supports images in is the compose buffer, which is also where
+`agent-shell-side-send-region' quotes into an open side and where the
+handback lands its summary. Starting a side now uses it too, so all
+three share one surface. This supersedes section 15 item 1: there is no
+question prompt left to preview in.
+
+1. **Refuse first, then compose.** Interactive `agent-shell-side'
+   checks every precondition before it does anything, so a refusal
+   leaves the region active. It then forks, shows the side, and with a
+   region active puts it as a block quote into the side's viewport
+   compose buffer, point on the line below. Nothing is sent. The user
+   writes the question there, can paste images (`agent-shell-yank-dwim'
+   inserts an `@path' mention, sent as an image block), and sends,
+   queues, or steers with the compose buffer's own keys. With no region
+   it opens blank, as before.
+2. **Sending early is refused, not lost.** Until the fork has a
+   session, the viewport refuses a send with "Starting agent, please
+   wait" and keeps the draft. Typing a question usually outlasts the
+   fork.
+3. **A message from Lisp still goes out.** `agent-shell-side' called
+   with MESSAGE sends it as soon as the session is ready, as section 12
+   describes.
+
+Costs, accepted:
+
+1. **The first turn wears the inherited title.** No question is known
+   when the fork is made, so section 13's `_meta.sessionTitle' is left
+   out and the side shows the SDK's `<parent title> (fork)' until
+   claude-agent-acp generates a real title at the first turn-end
+   (`_meta.generateSessionTitle').
+2. **Backing out leaves a blank side.** Its fork exists; the user closes
+   it, and dismissing deletes the fork by default. Tearing down on
+   cancel was left out on purpose: agent-shell has no hook for a
+   compose cancel, and its `clean-up' event fires on kill right before
+   the ACP client shuts down, too late for a `session/delete' round
+   trip.
+3. **A failed fork takes the draft with it, but not silently.** A fork
+   that fails after starting tears the side down as before. Any draft
+   in its compose buffer is first copied to the kill ring, and the
+   message says so.
 
 ## Order of work
 

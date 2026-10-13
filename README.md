@@ -45,12 +45,19 @@ name, so it can be told apart in buffer lists.
 ### Asking about part of an answer
 
 Select the passage in the parent conversation, then run `agent-shell-side`. The
-selection is carried in as a markdown block quote and you are asked for your
-question, so the side conversation opens pointing at exactly the part you meant.
-An empty question opens it blank. While you type the question the selection
-stays highlighted, and the prompt names its line count and its first and last
-lines, so you can check its edges before anything is sent. `C-g` leaves it
-selected.
+side conversation opens with the selection quoted as a markdown block quote in
+its compose buffer and point on the line below, so you write your question under
+exactly the part you meant. Nothing is sent until you send it, with the compose
+buffer's own keys: send, queue, or steer, as for any prompt. Because it is a
+compose buffer, you can paste images into the question too: agent-shell's
+`agent-shell-yank-dwim` inserts an `@path` mention, which goes out as an image.
+With no selection, the side conversation opens blank.
+
+If something stops the side conversation from starting, such as an agent that
+cannot fork, it refuses before anything happens and the selection stays active.
+Sending before the fork is ready is refused with "Starting agent, please wait",
+and your draft is kept. Backing out of the compose buffer without sending leaves
+a blank side conversation open; close it with `agent-shell-side-dismiss`.
 
 Once a side conversation is open, `agent-shell-side-send-region` (`C-c C-r`)
 quotes another passage into it. The quote lands in the side's compose buffer,
@@ -224,7 +231,10 @@ derives `<parent title> (fork)` and never revisits it, which says nothing about
 what this conversation is for. So the fork request carries two more `_meta` keys:
 
 - **`_meta.sessionTitle`** — the first line of the question the side opens with,
-  used as its title straight away. Left out when you start a side blank.
+  used as its title straight away. Only `agent-shell-side` called from Lisp with
+  a message has one; started interactively, the side has no question yet, so the
+  key is left out and the side carries `<parent title> (fork)` until its first
+  turn ends.
 - **`_meta.generateSessionTitle`** — asks the agent to title the side after its
   own turns once it has taken one. What you opened with is what you asked, not
   what the conversation turned out to be about.
