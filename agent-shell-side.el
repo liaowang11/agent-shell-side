@@ -314,12 +314,11 @@ Defaults to the current buffer.  Oldest first.  Scoped to
 conversation's own shell buffer, so its paired viewport is never
 returned as a second child alongside it."
   (let ((parent (or parent-buffer (current-buffer))))
-    (seq-filter (lambda (buffer)
-                  (eq (agent-shell-side-parent-buffer buffer) parent))
-                (seq-filter (lambda (buffer)
-                              (buffer-local-value 'agent-shell-side--is-side
-                                                  buffer))
-                            (agent-shell-side--list-buffers)))))
+    (agent-shell-side--oldest-first
+     (seq-filter (lambda (buffer)
+                   (and (buffer-local-value 'agent-shell-side--is-side buffer)
+                        (eq (agent-shell-side-parent-buffer buffer) parent)))
+                 (buffer-list)))))
 
 (defun agent-shell-side--viewport-shell (buffer)
   "Return the side conversation whose viewport BUFFER is, or nil.
@@ -1569,25 +1568,53 @@ Nil anywhere else, which leaves the listing unscoped."
         (agent-shell-side--parent-session-id shell)
       (agent-shell-side--session-id shell))))
 
+(defun agent-shell-side--oldest-first (buffers)
+  "Return BUFFERS sorted by when their side conversation started, oldest first.
+A buffer with no start time, such as a viewport, sorts first."
+  (sort buffers
+        (lambda (a b)
+          (time-less-p
+           (or (buffer-local-value 'agent-shell-side--created-at a) 0)
+           (or (buffer-local-value 'agent-shell-side--created-at b) 0)))))
+
 (defun agent-shell-side--list-buffers (&optional parent-session-id)
   "Return the live side conversations, oldest first.
 
-With PARENT-SESSION-ID, only the ones forked from that session.
+Both a side conversation's shell buffer and its viewport, the buffers
+`agent-shell-side-buffer-p' accepts.  With PARENT-SESSION-ID, only the
+ones forked from that session.
 
 Oldest first because the one open longest is the one most likely to have
-been forgotten."
-  (let ((buffers (seq-filter #'agent-shell-side-buffer-p (buffer-list))))
+been forgotten.
+
+The viewports are found by asking each side conversation for its own,
+rather than by testing every buffer with `agent-shell-side-buffer-p':
+the sidebar lists side conversations on every redraw, and a session
+keeps a hundred or more buffers open."
+  (let* ((viewports
+          (seq-keep (lambda (buffer)
+                      (when (buffer-local-value 'agent-shell-side--is-side
+                                                buffer)
+                        (when-let* ((viewport
+                                     (agent-shell-side-compat-viewport-buffer
+                                      buffer))
+                                    ((buffer-live-p viewport))
+                                    ((agent-shell-side-compat-viewport-buffer-p
+                                      viewport)))
+                          viewport)))
+                    (buffer-list)))
+         (buffers (seq-filter
+                   (lambda (buffer)
+                     (or (buffer-local-value 'agent-shell-side--is-side buffer)
+                         (memq buffer viewports)))
+                   (buffer-list))))
     (when parent-session-id
       (setq buffers
             (seq-filter (lambda (buffer)
                           (equal (agent-shell-side--parent-session-id buffer)
                                  parent-session-id))
                         buffers)))
-    (sort buffers
-          (lambda (a b)
-            (time-less-p
-             (or (buffer-local-value 'agent-shell-side--created-at a) 0)
-             (or (buffer-local-value 'agent-shell-side--created-at b) 0))))))
+    (agent-shell-side--oldest-first buffers)))
 
 (defun agent-shell-side--list-label (buffer)
   "Return a one-line description of side conversation BUFFER."

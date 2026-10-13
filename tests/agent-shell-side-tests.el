@@ -1169,6 +1169,88 @@ named once."
       (should (equal (agent-shell-side-children parent) (list side)))
       (should-not (memq viewport (agent-shell-side-children parent))))))
 
+(defmacro agent-shell-side-tests--with-viewports (&rest body)
+  "Evaluate BODY beside a side conversation, its viewport, and strangers.
+
+Binds `side' and `viewport' (the side's own viewport), `stranger-viewport'
+\(the viewport of a shell that is no side conversation), and `checked',
+the buffers `agent-shell-side-compat-viewport-buffer-p' was asked about,
+newest first.  `plain' buffers stand in for the many unrelated buffers
+a real session has open."
+  (declare (indent 0))
+  `(agent-shell-side-tests--with-parent
+     (let* ((agent-shell-prefer-viewport-interaction t)
+            (side (with-current-buffer parent
+                    (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                      (agent-shell-side))))
+            (viewport (agent-shell-side-tests--viewport-for side))
+            (stranger (generate-new-buffer " *agent-shell side test stranger*"))
+            (stranger-viewport
+             (generate-new-buffer " *agent-shell side test stranger viewport*"))
+            (plain (list (generate-new-buffer " *side test plain 1*")
+                         (generate-new-buffer " *side test plain 2*")))
+            (checked nil)
+            (viewport-buffer-p
+             (symbol-function 'agent-shell-side-compat-viewport-buffer-p)))
+       (unwind-protect
+           (progn
+             (with-current-buffer stranger (agent-shell-mode))
+             (with-current-buffer stranger-viewport
+               (agent-shell-viewport-edit-mode)
+               (setq-local agent-shell-test-viewport-shell stranger))
+             (cl-letf (((symbol-function
+                         'agent-shell-side-compat-viewport-buffer-p)
+                        (lambda (&optional buffer)
+                          (push (or buffer (current-buffer)) checked)
+                          (funcall viewport-buffer-p buffer))))
+               ,@body))
+         (let ((kill-buffer-query-functions nil))
+           (mapc #'kill-buffer
+                 (append (list stranger stranger-viewport) plain)))))))
+
+(ert-deftest agent-shell-side-test-list-buffers-checks-only-side-viewports ()
+  "Listing asks only the sides' own viewports whether they are viewports.
+
+The sidebar lists side conversations on every redraw, and a session
+keeps a hundred or more buffers open.  Testing each of them for a
+viewport, and each viewport against every side, cost 1.8 ms a call."
+  (agent-shell-side-tests--with-viewports
+    (let ((buffers (agent-shell-side--list-buffers)))
+      (should (memq side buffers))
+      (should (memq viewport buffers))
+      (should-not (memq stranger-viewport buffers))
+      (should-not (memq parent buffers))
+      (should (seq-every-p (lambda (buffer) (eq buffer viewport)) checked)))))
+
+(ert-deftest agent-shell-side-test-children-looks-at-no-viewport ()
+  "Listing a shell's children never asks which buffers are viewports.
+
+Children are side conversations' own shell buffers, so a viewport can
+never be one."
+  (agent-shell-side-tests--with-viewports
+    (should (equal (agent-shell-side-children parent) (list side)))
+    (should-not checked)))
+
+(ert-deftest agent-shell-side-test-children-oldest-first ()
+  "Two side conversations of one shell come back oldest first."
+  (agent-shell-side-tests--with-parent
+    (let ((newer (agent-shell-side-tests--start-side parent))
+          (older (generate-new-buffer " *agent-shell side test older*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer older
+              (agent-shell-mode)
+              (setq agent-shell-side--is-side t
+                    agent-shell-side--parent-buffer parent
+                    agent-shell-side--created-at
+                    (time-subtract
+                     (buffer-local-value 'agent-shell-side--created-at newer)
+                     60)))
+            (should (equal (agent-shell-side-children parent)
+                           (list older newer))))
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer older))))))
+
 (ert-deftest agent-shell-side-test-list-label-describes-the-parent ()
   "A candidate names its parent and reports the parent's state."
   (agent-shell-side-tests--with-parent
