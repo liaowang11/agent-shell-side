@@ -343,7 +343,7 @@ running when this package loaded."
       (ignore-errors (agent-shell-side-compat-session-id buffer))))
 
 
-;;; Opening message
+;;; What a side conversation opens with
 
 (defun agent-shell-side--quote (text)
   "Return TEXT as a markdown block quote.
@@ -356,72 +356,11 @@ reading as the user's own words rather than as quoted material."
              (split-string (string-trim text) "\n")
              "\n"))
 
-(defun agent-shell-side--opening-message (selection question)
-  "Return the first message for a side conversation, or nil for none.
-
-SELECTION is text quoted from the parent conversation, QUESTION the
-user's own words.  Either may be nil or blank."
-  (let* ((selection (and selection
-                         (not (string-blank-p selection))
-                         (agent-shell-side--quote selection)))
-         (question (and question
-                        (not (string-blank-p question))
-                        (string-trim question)))
-         (parts (delq nil (list selection question))))
-    (when parts
-      (string-join parts "\n\n"))))
-
 (defun agent-shell-side--region-text ()
   "Return the active region's text, deactivating it, or nil when there is none."
   (when (use-region-p)
     (prog1 (buffer-substring-no-properties (region-beginning) (region-end))
       (deactivate-mark))))
-
-(defconst agent-shell-side--summary-width 30
-  "Columns kept of each end of a selection summarized in a prompt.")
-
-(defun agent-shell-side--selection-summary (text)
-  "Return a one-line summary of selected TEXT, for a prompt.
-
-The line count and the first and last lines, each cut to
-`agent-shell-side--summary-width' columns.  The first line keeps its
-start and the last its end: the two edges are what tell a user the
-selection is the one they meant.  Not the whole text, which can be long
-and is still on screen, highlighted, while the prompt is up."
-  (let* ((lines (split-string (string-trim text) "\n"))
-         (width agent-shell-side--summary-width)
-         (head (truncate-string-to-width (string-trim (car lines)) width
-                                         nil nil "…"))
-         (tail (string-trim (car (last lines))))
-         (tail-width (string-width tail)))
-    (when (> tail-width width)
-      (setq tail (concat "…" (truncate-string-to-width
-                              tail tail-width (- tail-width (1- width))))))
-    (if (cdr lines)
-        (format "%d lines \"%s\" … \"%s\"" (length lines) head tail)
-      (format "1 line \"%s\"" head))))
-
-(defun agent-shell-side--read-opening-message ()
-  "Read the message a side conversation should open with, or nil for none.
-
-A selection in the parent conversation is carried in as a block quote, so
-a question about part of an answer can point at that part.  An empty
-question opens the side conversation with nothing sent.
-
-The selection stays highlighted while the question is read, and the
-prompt summarizes it, so its boundaries can be checked before anything
-is sent.  Quitting the question leaves it selected."
-  (let* ((selection (when (use-region-p)
-                      (buffer-substring-no-properties (region-beginning)
-                                                      (region-end))))
-         (question (read-string
-                    (if selection
-                        (format "Quoting %s\nAsk about it (empty to just quote it): "
-                                (agent-shell-side--selection-summary selection))
-                      "Side conversation (empty to start blank): "))))
-    (when selection
-      (deactivate-mark))
-    (agent-shell-side--opening-message selection question)))
 
 (defun agent-shell-side--send-when-ready (side-buffer message)
   "Send MESSAGE in SIDE-BUFFER once its session is ready.
@@ -688,16 +627,27 @@ Returns the subscription token."
 (defun agent-shell-side--abandon-fork (side-buffer message)
   "Close SIDE-BUFFER after its fork failed to start a session.
 
-MESSAGE is what the agent said, repeated so the reason is not guesswork."
+MESSAGE is what the agent said, repeated so the reason is not guesswork.
+
+A draft in the side's compose buffer is copied to the kill ring first.
+The question is written while the fork is still in flight, often with a
+quote and pasted images in it, and closing the side would otherwise take
+all of that down with it."
   (let ((parent (agent-shell-side--live-buffer
                  (buffer-local-value 'agent-shell-side--parent-buffer
-                                     side-buffer))))
+                                     side-buffer)))
+        (saved nil))
     (when (buffer-live-p side-buffer)
-      (agent-shell-side--kill-and-hand-back side-buffer parent)))
-  (message (concat "agent-shell-side: the fork did not start a session%s.  "
-                   "A conversation that has not taken a turn yet cannot be "
-                   "forked; send a message in it first")
-           (if message (format " (%s)" message) "")))
+      (when-let* ((draft (agent-shell-side-compat-viewport-draft-buffer side-buffer)))
+        (kill-new (with-current-buffer draft
+                    (buffer-substring-no-properties (point-min) (point-max))))
+        (setq saved t))
+      (agent-shell-side--kill-and-hand-back side-buffer parent))
+    (message (concat "agent-shell-side: the fork did not start a session%s.  "
+                     "A conversation that has not taken a turn yet cannot be "
+                     "forked; send a message in it first%s")
+             (if message (format " (%s)" message) "")
+             (if saved ".  The draft was copied to the kill ring" ""))))
 
 (defun agent-shell-side--watch-startup (side-buffer)
   "Record SIDE-BUFFER's session id, or close it when the fork starts none.
@@ -1110,7 +1060,7 @@ rather than a compose buffer; see `agent-shell-side--show'."
   (agent-shell-side--show buffer agent-shell-display-action nil view))
 
 ;;;###autoload
-(defun agent-shell-side (&optional message)
+(defun agent-shell-side (&optional message quote)
   "Fork this conversation into a side one and switch to it.
 
 The side conversation inherits the parent's history as reference context
@@ -1119,16 +1069,31 @@ asked.  Close it with `agent-shell-side-dismiss', or with
 `agent-shell-side-conclude' to carry a summary back.
 
 MESSAGE, when non-nil, is sent as soon as the forked session is ready.
-Called interactively, an active region is carried in as a block quote and
-a question is read in the minibuffer, so a side conversation can point at
-part of an answer.  An empty question starts the conversation blank.
+It is for callers that already know what to ask; it also names the
+forked session after its first line.
+
+QUOTE, when non-nil, is text to quote into the side's compose buffer,
+with point on the line below for the question.  Called interactively,
+it is the active region, so a side conversation can point at part of an
+answer.  The question is written there rather than in the minibuffer
+because a compose buffer is where `agent-shell-yank-dwim' can paste an
+image, and a minibuffer cannot carry one.  The compose buffer's own keys
+send it.  Sending before the fork has a session is refused by the
+viewport with \"Starting agent, please wait\", and the draft is kept.
+Should the fork fail, the draft is copied to the kill ring.  Backing out
+of the compose buffer instead leaves a blank side conversation open,
+deliberately: closing it is `agent-shell-side-dismiss', not a guess made
+on the user's behalf.  Without a region the side opens as it otherwise
+would.
 
 Requires an agent that advertises `session/fork'.
 
-Every refusal runs before the question is asked, so a conversation that
-cannot be forked costs no typing."
+Every refusal runs before the region is taken, so a conversation that
+cannot be forked leaves the selection in place to send elsewhere."
   (interactive (progn (agent-shell-side--forkable-parent)
-                      (list (agent-shell-side--read-opening-message))))
+                      (list nil (when-let* ((text (agent-shell-side--region-text))
+                                            ((not (string-blank-p text))))
+                                  text))))
   (let* ((parent-buffer (agent-shell-side--forkable-parent))
          (parent-session-id (agent-shell-side--session-id parent-buffer))
          (parent-config (agent-shell-get-config parent-buffer))
@@ -1146,6 +1111,15 @@ cannot be forked costs no typing."
       (when message
         (agent-shell-side--send-when-ready side-buffer message))
       (agent-shell-side--display side-buffer from-viewport)
+      ;; After the display, which has put the side where it belongs: the
+      ;; compose buffer then lands in that same place.  Under viewport
+      ;; interaction it is the viewport just shown, and the show selects a
+      ;; visible window rather than opening another.  Otherwise the side
+      ;; shell is what was shown, and the side's action puts its compose
+      ;; buffer beside it rather than wherever `agent-shell' puts its own.
+      (when quote
+        (let ((agent-shell-display-action agent-shell-side-display-action))
+          (agent-shell-side--compose-quote side-buffer quote)))
       side-buffer)))
 
 ;;;###autoload
@@ -1263,13 +1237,18 @@ A lone one is used without asking, unless ALWAYS-ASK."
 (defun agent-shell-side--quote-into (shell-buffer)
   "Quote the region into SHELL-BUFFER's compose buffer, with point below it.
 
+See `agent-shell-side--compose-quote'."
+  (agent-shell-side--compose-quote shell-buffer (agent-shell-side--region-text)))
+
+(defun agent-shell-side--compose-quote (shell-buffer text)
+  "Quote TEXT into SHELL-BUFFER's compose buffer, with point below it.
+
 A compose buffer, as for handed-back findings: it takes text while the
 conversation is busy, and its own keys send, queue, or steer.  The
 quote is appended to any draft already there, which keeps that draft's
 disposition.  Point goes on the blank line after it, where the question
 about it is written."
-  (let* ((quoted (concat (agent-shell-side--quote (agent-shell-side--region-text))
-                         "\n\n"))
+  (let* ((quoted (concat (agent-shell-side--quote text) "\n\n"))
          (inserted (agent-shell-side-compat-compose-in-viewport shell-buffer quoted))
          (buffer (map-elt inserted :buffer))
          (end (map-elt inserted :end)))
@@ -1284,12 +1263,12 @@ about it is written."
   "Quote the region into the other end of a side conversation.
 
 From a shell, it goes to that shell's side conversation, and with none
-open it starts one that opens with the region, as `agent-shell-side'
-does.  From a side conversation, it goes back to the shell it was forked
-from.  From any other buffer, it goes to the side conversation that is
-open, asking which when there are several.  With a prefix argument,
-PICK, a shell asks too, offering every open side conversation; a side
-conversation always sends to its parent.
+open it starts one with the region quoted in its compose buffer, as
+`agent-shell-side' does.  From a side conversation, it goes back to the
+shell it was forked from.  From any other buffer, it goes to the side
+conversation that is open, asking which when there are several.  With a
+prefix argument, PICK, a shell asks too, offering every open side
+conversation; a side conversation always sends to its parent.
 
 The quote lands in a compose buffer, never sent, with point below it for
 the question.  Under the side keys this is

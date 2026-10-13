@@ -685,6 +685,47 @@ a turn does, answering -32002."
       (should-not (buffer-live-p side))
       (should-not (buffer-local-value 'agent-shell-side--side-buffer parent)))))
 
+(defun agent-shell-side-tests--fail-fork (side)
+  "Fail SIDE's fork as claude-agent-acp does, returning the messages shown."
+  (agent-shell-side-tests--silently
+    (funcall (agent-shell-side-tests--handler side nil)
+             '((:event . error)
+               (:data . ((:code . -32002)
+                         (:message . "Resource not found: x")))))))
+
+(ert-deftest agent-shell-side-test-failed-fork-keeps-the-draft ()
+  "A draft written in a side whose fork failed goes to the kill ring.
+
+The question is written while the fork is still in flight, so a failure
+would otherwise take it down with the buffer."
+  (agent-shell-side-tests--with-parent
+    (let* ((kill-ring nil)
+           (kill-ring-yank-pointer nil)
+           (interprogram-cut-function nil)
+           (side (agent-shell-side-tests--open-side parent)))
+      (agent-shell-viewport--show-buffer :shell-buffer side :edit t
+                                         :append "half a question")
+      (let ((messages (agent-shell-side-tests--fail-fork side)))
+        (should-not (buffer-live-p side))
+        (should (string-match-p "half a question" (current-kill 0)))
+        (should (seq-find (lambda (line) (string-match-p "kill ring" line))
+                          messages))))))
+
+(ert-deftest agent-shell-side-test-failed-fork-without-a-draft-leaves-the-kill-ring ()
+  "With nothing written, a failed fork copies nothing and says nothing of it."
+  (agent-shell-side-tests--with-parent
+    (let* ((kill-ring nil)
+           (kill-ring-yank-pointer nil)
+           (interprogram-cut-function nil)
+           (side (agent-shell-side-tests--open-side parent))
+           (messages (agent-shell-side-tests--fail-fork side)))
+      (should-not (buffer-live-p side))
+      (should-not kill-ring)
+      (should (seq-find (lambda (line) (string-match-p "did not start" line))
+                        messages))
+      (should-not (seq-find (lambda (line) (string-match-p "kill ring" line))
+                            messages)))))
+
 (ert-deftest agent-shell-side-test-error-after-a-session-keeps-the-side ()
   "Once the session exists, an error is an ordinary failure, not a dead fork."
   (agent-shell-side-tests--with-parent
@@ -791,15 +832,6 @@ a turn does, answering -32002."
 An unprefixed blank line ends a markdown block quote, which would leave
 the rest of the selection reading as the user's own words."
   (should (equal (agent-shell-side--quote "one\n\ntwo") "> one\n>\n> two")))
-
-(ert-deftest agent-shell-side-test-opening-message ()
-  "The opening message pairs any quoted selection with the question."
-  (should (equal (agent-shell-side--opening-message "sel" "why?")
-                 "> sel\n\nwhy?"))
-  (should (equal (agent-shell-side--opening-message nil "why?") "why?"))
-  (should (equal (agent-shell-side--opening-message "sel" nil) "> sel"))
-  (should-not (agent-shell-side--opening-message nil nil))
-  (should-not (agent-shell-side--opening-message "   " "  ")))
 
 (ert-deftest agent-shell-side-test-start-sends-opening-message-when-ready ()
   "An opening message is sent once the forked shell is ready, not before.
@@ -1392,18 +1424,83 @@ friction that makes people stop using the feature.  Keeping is one
 customize away."
   (should (eq (default-value 'agent-shell-side-on-dismiss) 'delete)))
 
-(ert-deftest agent-shell-side-test-start-checks-before-asking ()
-  "Preconditions are checked before the question is read.
+(ert-deftest agent-shell-side-test-start-checks-before-anything ()
+  "Preconditions are checked before anything else happens.
 
-Typing a question and then being told the agent cannot fork wastes the
-typing.  Codex checks first and restores the composer on failure."
+A refusal leaves no fork started and the region still selected, so it
+can be adjusted and sent elsewhere.  Codex checks first and restores the
+composer on failure."
   (agent-shell-side-tests--with-parent
     (with-current-buffer parent
       (setf (alist-get :supports-session-fork agent-shell--state) nil)
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) (ert-fail "asked for a question first"))))
+      (agent-shell-side-tests--select-text "keep me")
+      (cl-letf (((symbol-function 'agent-shell-side-compat-start-fork)
+                 (lambda (&rest _) (ert-fail "forked before refusing"))))
         (should-error (call-interactively #'agent-shell-side)
-                      :type 'user-error)))))
+                      :type 'user-error))
+      (should (region-active-p))
+      (should-not agent-shell-test-started))))
+
+(ert-deftest agent-shell-side-test-start-quotes-the-region-into-the-side ()
+  "Called with a region, the new side's compose buffer opens with it quoted.
+
+Never sent: the question is written under the quote, in a buffer that
+also takes pasted images, which a minibuffer cannot.  Point ends below
+the quote, and nothing waits on the session to send anything."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-test-viewport-calls nil)
+          (agent-shell-test-inserted nil)
+          (side nil))
+      (with-current-buffer parent
+        (agent-shell-side-tests--select-text "line one\nline two")
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (setq side (call-interactively #'agent-shell-side)))
+        (should-not (region-active-p)))
+      (let ((call (car agent-shell-test-viewport-calls)))
+        (should (eq (plist-get call :shell-buffer) side))
+        (should (plist-get call :edit))
+        (should-not (plist-get call :submit))
+        (should (equal (plist-get call :append) "> line one\n> line two\n\n")))
+      (should-not agent-shell-test-inserted)
+      (should-not (agent-shell-side-tests--ready-handler side))
+      (with-current-buffer (agent-shell-side-tests--viewport-for side)
+        (should (= (point) (point-max)))))))
+
+(ert-deftest agent-shell-side-test-start-composes-where-the-side-goes ()
+  "The quote's compose buffer is displayed through the side's own action.
+
+The side conversation was just put where that action says.  Composing
+through `agent-shell-display-action' instead would open the compose
+buffer somewhere else entirely."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-side-display-action '((display-buffer-at-bottom)))
+          (agent-shell-test-viewport-actions nil))
+      (with-current-buffer parent
+        (agent-shell-side-tests--select-text "this")
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (call-interactively #'agent-shell-side)))
+      (should (equal (car agent-shell-test-viewport-actions)
+                     '((display-buffer-at-bottom)))))))
+
+(ert-deftest agent-shell-side-test-start-without-a-region-composes-nothing ()
+  "Without a region there is nothing to quote, so no compose buffer is seeded."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-test-viewport-calls nil))
+      (with-current-buffer parent
+        (deactivate-mark)
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (call-interactively #'agent-shell-side)))
+      (should-not agent-shell-test-viewport-calls))))
+
+(ert-deftest agent-shell-side-test-start-ignores-a-blank-region ()
+  "A region of whitespace quotes nothing."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-test-viewport-calls nil))
+      (with-current-buffer parent
+        (agent-shell-side-tests--select-text "  \n ")
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (call-interactively #'agent-shell-side)))
+      (should-not agent-shell-test-viewport-calls))))
 
 (defun agent-shell-side-tests--conclude-with-summary (side text &optional real-display)
   "Run `agent-shell-side-conclude' in SIDE and stream TEXT back as its summary.
@@ -2579,66 +2676,6 @@ own text and there is none."
     (set-mark start)
     (activate-mark)))
 
-(ert-deftest agent-shell-side-test-selection-summary ()
-  "The summary names the line count and the selection's two ends."
-  (should (equal (agent-shell-side--selection-summary "just this")
-                 "1 line \"just this\""))
-  (should (equal (agent-shell-side--selection-summary "\nfirst\nmiddle\nlast\n\n")
-                 "3 lines \"first\" … \"last\"")))
-
-(ert-deftest agent-shell-side-test-selection-summary-truncates-both-ends ()
-  "A long first line keeps its start, a long last line keeps its end.
-
-Those are the two edges of the selection, which is what the summary is
-there to confirm."
-  (let ((summary (agent-shell-side--selection-summary
-                  (concat "head" (make-string 80 ?a) "\n"
-                          (make-string 80 ?b) "tail"))))
-    (should (string-match-p "\"heada*…\"" summary))
-    (should (string-match-p "\"…b*tail\"" summary))
-    (should (< (string-width summary) 90))))
-
-(ert-deftest agent-shell-side-test-question-prompt-previews-the-selection ()
-  "The question prompt summarizes the selection, which stays highlighted.
-
-The highlighted region is the most faithful preview there is, so it is
-only deactivated once the question has been read."
-  (agent-shell-side-tests--with-parent
-    (with-current-buffer parent
-      (agent-shell-side-tests--select-text
-       "The fork is async\nso we wait\nuntil it is ready")
-      (let ((prompt nil)
-            (active-while-asking nil))
-        (cl-letf (((symbol-function 'read-string)
-                   (lambda (text &rest _)
-                     (setq prompt text
-                           active-while-asking (region-active-p))
-                     "why?")))
-          (should (equal (agent-shell-side--read-opening-message)
-                         (concat "> The fork is async\n> so we wait\n"
-                                 "> until it is ready\n\nwhy?"))))
-        (should active-while-asking)
-        (should-not (region-active-p))
-        (should (string-match-p "3 lines" prompt))
-        (should (string-match-p "The fork is async" prompt))
-        (should (string-match-p "until it is ready" prompt))
-        (should (string-suffix-p ": " prompt))))))
-
-(ert-deftest agent-shell-side-test-quitting-the-question-keeps-the-region ()
-  "Quitting the question leaves the selection active, to adjust and retry."
-  (agent-shell-side-tests--with-parent
-    (with-current-buffer parent
-      (agent-shell-side-tests--select-text "keep me")
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) (signal 'quit nil))))
-        ;; Caught by hand: `should-error' only catches `error', and ERT
-        ;; reports a stray quit as neither a pass nor a failure.
-        (should (eq (condition-case nil
-                        (progn (agent-shell-side--read-opening-message) 'returned)
-                      (quit 'quit))
-                    'quit)))
-      (should (region-active-p)))))
-
 (ert-deftest agent-shell-side-test-send-region-quotes-into-the-side ()
   "From the parent, the region lands quoted in the side's compose buffer.
 
@@ -2666,20 +2703,36 @@ quote, where that question goes."
         (should (string-suffix-p "> line two\n\n" (buffer-string)))))))
 
 (ert-deftest agent-shell-side-test-send-region-without-a-side-forks-one ()
-  "With no side open, sending a region starts one that opens with it."
+  "With no side open, sending a region starts one with it quoted to compose."
   (agent-shell-side-tests--with-parent
-    (let ((agent-shell-test-inserted nil))
+    (let ((agent-shell-test-inserted nil)
+          (agent-shell-test-viewport-calls nil))
       (with-current-buffer parent
         (agent-shell-side-tests--select-text "pick me")
-        (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "why?"))
-                  ((symbol-function 'agent-shell-side--display) #'ignore))
-          (agent-shell-side-send-region)))
-      (let ((side (buffer-local-value 'agent-shell-side--side-buffer parent)))
+        (cl-letf (((symbol-function 'agent-shell-side--display) #'ignore))
+          (agent-shell-side-send-region))
+        (should-not (region-active-p)))
+      (let ((side (buffer-local-value 'agent-shell-side--side-buffer parent))
+            (call (car agent-shell-test-viewport-calls)))
         (should (buffer-live-p side))
-        (funcall (agent-shell-side-tests--ready-handler side)
-                 '((:event . prompt-ready)))
-        (should (equal (map-elt (car agent-shell-test-inserted) :text)
-                       "> pick me\n\nwhy?"))))))
+        (should (eq (plist-get call :shell-buffer) side))
+        (should (plist-get call :edit))
+        (should-not (plist-get call :submit))
+        (should (equal (plist-get call :append) "> pick me\n\n"))
+        (should-not agent-shell-test-inserted)
+        (should-not (agent-shell-side-tests--ready-handler side))
+        (with-current-buffer (agent-shell-side-tests--viewport-for side)
+          (should (= (point) (point-max))))))))
+
+(ert-deftest agent-shell-side-test-send-region-without-a-side-checks-first ()
+  "A parent that cannot fork refuses, leaving the region to send elsewhere."
+  (agent-shell-side-tests--with-parent
+    (with-current-buffer parent
+      (setf (alist-get :supports-session-fork agent-shell--state) nil)
+      (agent-shell-side-tests--select-text "pick me")
+      (should-error (agent-shell-side-send-region) :type 'user-error)
+      (should (region-active-p))
+      (should-not agent-shell-test-started))))
 
 (ert-deftest agent-shell-side-test-send-region-from-a-side-goes-to-the-parent ()
   "From a side conversation, the region goes back to the parent's compose buffer."
