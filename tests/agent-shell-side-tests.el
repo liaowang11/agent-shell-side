@@ -1482,6 +1482,29 @@ buffer somewhere else entirely."
       (should (equal (car agent-shell-test-viewport-actions)
                      '((display-buffer-at-bottom)))))))
 
+(ert-deftest agent-shell-side-test-start-displays-before-composing ()
+  "Under viewport interaction the side is shown first, then the quote composed.
+
+Displaying is what puts the viewport where the side's action says; the
+compose then finds it on screen.  Composed first, the quote would land in
+a compose buffer the later show rewrites."
+  (agent-shell-side-tests--with-parent
+    (let ((agent-shell-prefer-viewport-interaction t)
+          (agent-shell-test-viewport-calls nil)
+          (side nil))
+      (with-current-buffer parent
+        (agent-shell-side-tests--select-text "this")
+        (setq side (call-interactively #'agent-shell-side)))
+      (let ((compose (car agent-shell-test-viewport-calls))
+            (show (cadr agent-shell-test-viewport-calls)))
+        (should (equal (length agent-shell-test-viewport-calls) 2))
+        (should (eq (plist-get show :shell-buffer) side))
+        (should-not (plist-get show :edit))
+        (should (equal (plist-get show :append) ""))
+        (should (eq (plist-get compose :shell-buffer) side))
+        (should (plist-get compose :edit))
+        (should (equal (plist-get compose :append) "> this\n\n"))))))
+
 (ert-deftest agent-shell-side-test-start-without-a-region-composes-nothing ()
   "Without a region there is nothing to quote, so no compose buffer is seeded."
   (agent-shell-side-tests--with-parent
