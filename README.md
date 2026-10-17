@@ -1,6 +1,19 @@
 # agent-shell-side
 
-Ask a quick question without derailing the conversation you are in.
+[![CI](https://github.com/liaowang11/agent-shell-side/actions/workflows/ci.yml/badge.svg)](https://github.com/liaowang11/agent-shell-side/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+
+Ask a quick side question in Emacs without derailing the AI coding session you
+are in.
+
+> [!WARNING]
+> **Experimental, and under active development.** Command names, options, and
+> the boundary instruction text can change without a deprecation period, and
+> this package is not on MELPA. Pin a commit if you depend on it. The live
+> probes have been run against one adapter only; see
+> [What has been tested live](#what-has-been-tested-live) for exactly what is
+> and is not proven, and [DESIGN.md](DESIGN.md) for what is deliberately
+> unbuilt.
 
 `M-x agent-shell-side` forks the current [agent-shell](https://github.com/xenodium/agent-shell)
 session into a second shell whose inherited history is demoted to reference
@@ -8,7 +21,11 @@ material. The agent can still read everything that came before, so the question
 needs no re-explaining, but it is told not to continue the parent's task, not to
 touch sub-agents, and not to change anything unless this conversation asks.
 
-Modelled on the `/side` command in OpenAI's Codex TUI.
+Modelled on the `/side` command in OpenAI's Codex TUI. It answers the same need
+as Claude Code's `/btw`, by a different mechanism: a real forked session that
+keeps its tools, rather than a single tool-less turn. Works with any coding
+agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+and advertises `session/fork`, such as claude-agent-acp.
 
 ## Install
 
