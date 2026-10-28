@@ -286,6 +286,40 @@ opened with, not what the conversation turned out to be about."
          (progn ,@body)
        (delete-file file))))
 
+(ert-deftest agent-shell-side-test-deleted-session-forgets-its-record ()
+  "A kept side deleted through agent-shell is no longer offered for resume.
+
+agent-shell answers a load of a deleted session by starting a new one,
+which reads as \"did not come back\" and would keep the record forever."
+  (agent-shell-side-tests--with-links-file
+    (agent-shell-side-links-add
+     (agent-shell-side-links-make :side-session-id "side-1"
+                                  :parent-session-id "parent-1"
+                                  :agent 'claude-code :cwd "/tmp/"))
+    (agent-shell-side-links-add
+     (agent-shell-side-links-make :side-session-id "side-2"
+                                  :parent-session-id "parent-1"
+                                  :agent 'claude-code :cwd "/tmp/"))
+    (should (memq #'agent-shell-side--forget-deleted-session
+                  agent-shell-session-deleted-functions))
+    (run-hook-with-args 'agent-shell-session-deleted-functions "side-1")
+    (should (equal (mapcar (lambda (record) (map-elt record :side-session-id))
+                           (agent-shell-side-links-read))
+                   '("side-2")))))
+
+(ert-deftest agent-shell-side-test-deleted-unrecorded-session-leaves-the-store ()
+  "Deleting a session nothing recorded does not rewrite the link store."
+  (agent-shell-side-tests--with-links-file
+    (agent-shell-side-links-add
+     (agent-shell-side-links-make :side-session-id "side-1"
+                                  :parent-session-id "parent-1"
+                                  :agent 'claude-code :cwd "/tmp/"))
+    (let ((written nil))
+      (cl-letf (((symbol-function 'agent-shell-side-links--write)
+                 (lambda (&rest _) (setq written t))))
+        (run-hook-with-args 'agent-shell-session-deleted-functions "other"))
+      (should-not written))))
+
 (ert-deftest agent-shell-side-test-links-round-trip ()
   "A written record reads back intact."
   (agent-shell-side-tests--with-links-file

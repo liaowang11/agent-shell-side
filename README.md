@@ -311,7 +311,10 @@ findings back to. Close the resumed one with `keep` and it is recorded afresh.
 
 The record is consumed once the session actually comes back, so one that resumes
 is not offered twice. One that does not is kept: if the agent rejects the load,
-the record stays so you can try again.
+the record stays so you can try again. A kept side deleted through agent-shell,
+from its session picker or `agent-shell-delete-session`, is forgotten at once:
+that needs `agent-shell-session-deleted-functions`, which only the
+[liaowang11 fork](https://github.com/liaowang11/agent-shell) has.
 
 With `agent-shell-prefer-viewport-interaction` set, or when started from a
 viewport buffer, the side conversation opens through a viewport as

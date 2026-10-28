@@ -922,6 +922,23 @@ sessions is not asked, and ON-DONE runs at once."
                      ((not parent) "its parent is gone")
                      (t "its parent has no session"))))))
 
+(defun agent-shell-side--forget-deleted-session (session-id)
+  "Forget the kept side conversation SESSION-ID, which was just deleted.
+
+Run from `agent-shell-session-deleted-functions', which only the
+liaowang11 fork of `agent-shell' has.  Without it a kept side deleted from
+`agent-shell''s session picker would stay on offer for
+`agent-shell-side-resume', and no failed resume can clear it: a load of
+a deleted session comes back as a new session, which looks the same as
+one rejected for now."
+  (when (seq-find (lambda (record)
+                    (equal (map-elt record :side-session-id) session-id))
+                  (agent-shell-side-links-read))
+    (agent-shell-side-links-remove session-id)))
+
+(add-hook 'agent-shell-session-deleted-functions
+          #'agent-shell-side--forget-deleted-session)
+
 (defun agent-shell-side--read-disposal ()
   "Return `delete' or `keep' for the side conversation being closed."
   (pcase agent-shell-side-on-dismiss
