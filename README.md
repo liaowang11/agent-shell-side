@@ -266,7 +266,11 @@ own store. `agent-shell-side-on-dismiss` decides what to do when you close one:
 
 - `delete` (the default) — ask the agent to drop it (`session/delete`). A side
   conversation is meant to be ephemeral, as Codex's is, and a question on every
-  close is friction on the common path.
+  close is friction on the common path. Where agent-shell has a session delete of
+  its own (`agent-shell--delete-session`, in the
+  [liaowang11 fork](https://github.com/liaowang11/agent-shell)), that is used
+  instead, so the side's transcripts go with the session. An agent that says it
+  cannot delete sessions is not asked, and the side closes at once.
 - `keep` — leave it, and record it in `agent-shell-side-links-file` so
   `agent-shell-side-resume` can find it again.
 - `ask` — ask each time.

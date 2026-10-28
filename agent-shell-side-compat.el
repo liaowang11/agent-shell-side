@@ -42,6 +42,9 @@
 
 (declare-function agent-shell--start "agent-shell")
 (declare-function agent-shell--insert-to-shell-buffer "agent-shell")
+(declare-function agent-shell--delete-session "agent-shell")
+(declare-function acp-send-request "acp")
+(declare-function acp-make-session-delete-request "acp")
 (declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
 (declare-function agent-shell-viewport--buffer "agent-shell-viewport")
 (declare-function agent-shell-viewport-view-mode "agent-shell-viewport")
@@ -49,6 +52,7 @@
 (declare-function agent-shell-viewport-view-last "agent-shell-viewport")
 
 (defvar agent-shell--state)
+(defvar agent-shell--transcript-file)
 (defvar agent-shell-prefer-viewport-interaction)
 
 (defconst agent-shell-side-compat--upgrade-hint
@@ -97,6 +101,44 @@ unforkable session."
 (defun agent-shell-side-compat-client (shell-buffer)
   "Return SHELL-BUFFER's ACP client, or nil when it has none yet."
   (map-elt (agent-shell-side-compat--state shell-buffer) :client))
+
+(defun agent-shell-side-compat-cannot-delete-p (shell-buffer)
+  "Return non-nil when SHELL-BUFFER's agent said it cannot delete sessions.
+
+Only an `agent-shell' that records `:supports-session-delete' can say
+so.  One that does not leaves the question open, and the delete is
+tried."
+  (let ((state (agent-shell-side-compat--state shell-buffer)))
+    (and (assq :supports-session-delete state)
+         (not (map-elt state :supports-session-delete)))))
+
+(defun agent-shell-side-compat-delete-session (shell-buffer session-id
+                                                            on-deleted on-failed)
+  "Delete SESSION-ID, SHELL-BUFFER's session, then call ON-DELETED or ON-FAILED.
+
+Neither callback takes arguments.  Where `agent-shell' has a delete of
+its own, it is used, since it also deletes the session's transcripts; a
+bare `session/delete' is sent otherwise.  Once the session is deleted,
+SHELL-BUFFER stops writing its transcript, which `agent-shell' would
+otherwise recreate on the next notification to arrive."
+  (let ((stop-transcript
+         (lambda ()
+           (when (buffer-live-p shell-buffer)
+             (with-current-buffer shell-buffer
+               (setq-local agent-shell--transcript-file nil)))
+           (funcall on-deleted))))
+    (if (fboundp 'agent-shell--delete-session)
+        (agent-shell--delete-session
+         :state (agent-shell-side-compat--state shell-buffer)
+         :session-id session-id
+         :on-deleted stop-transcript
+         :on-failed (lambda (_text) (funcall on-failed)))
+      (acp-send-request
+       :client (agent-shell-side-compat-client shell-buffer)
+       :request (acp-make-session-delete-request
+                 :session-id session-id)
+       :on-success (lambda (&rest _) (funcall stop-transcript))
+       :on-failure (lambda (&rest _) (funcall on-failed))))))
 
 (cl-defun agent-shell-side-compat-start-fork (&key config
                                                    fork-session-id

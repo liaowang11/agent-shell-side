@@ -803,6 +803,102 @@ would otherwise take it down with the buffer."
           (agent-shell-side-dismiss)))
       (should-not (buffer-live-p side)))))
 
+(defmacro agent-shell-side-tests--with-delete-session (outcome &rest body)
+  "Run BODY with agent-shell's own session delete answering OUTCOME.
+
+OUTCOME is `deleted', `failed', or nil for never answering.  The calls
+are recorded in `deleted-calls' as their keyword plists, newest first,
+with the shell's transcript file as it stood when the call was made."
+  (declare (indent 1))
+  `(let ((deleted-calls nil))
+     (cl-letf (((symbol-function 'agent-shell--delete-session)
+                (cl-function
+                 (lambda (&key state session-id on-deleted on-failed)
+                   (push (list :state state :session-id session-id)
+                         deleted-calls)
+                   (pcase ,outcome
+                     ('deleted (funcall on-deleted))
+                     ('failed (funcall on-failed "nope")))))))
+       ,@body)))
+
+(ert-deftest agent-shell-side-test-dismiss-deletes-through-agent-shell ()
+  "With agent-shell's own session delete available, dismissing uses it.
+
+It also deletes the session's transcripts, which a bare `session/delete'
+leaves behind."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-side-on-dismiss 'delete))
+      (agent-shell-side-tests--with-delete-session 'deleted
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (with-current-buffer side
+            (agent-shell-side-dismiss)))
+        (should-not (buffer-live-p side))
+        (should-not acp-test-sent-requests)
+        (should (length= deleted-calls 1))
+        (should (equal (plist-get (car deleted-calls) :session-id) "side-1"))))))
+
+(ert-deftest agent-shell-side-test-dismiss-stops-the-transcript-before-killing ()
+  "A deleted side writes no transcript back on its way out.
+
+agent-shell recreates a missing transcript on its next write, so a late
+notification would bring back the file the delete just removed."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-side-on-dismiss 'delete)
+          (file-at-kill 'unset))
+      (with-current-buffer side
+        (setq-local agent-shell--transcript-file "/tmp/side.md")
+        (add-hook 'kill-buffer-hook
+                  (lambda () (setq file-at-kill agent-shell--transcript-file))
+                  nil t))
+      (agent-shell-side-tests--with-delete-session 'deleted
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (with-current-buffer side
+            (agent-shell-side-dismiss))))
+      (should-not (buffer-live-p side))
+      (should (null file-at-kill)))))
+
+(ert-deftest agent-shell-side-test-dismiss-closes-when-agent-shell-delete-fails ()
+  "A delete the agent refuses still closes the buffer, transcript and all."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-side-on-dismiss 'delete)
+          (file-at-kill 'unset))
+      (with-current-buffer side
+        (setq-local agent-shell--transcript-file "/tmp/side.md")
+        (add-hook 'kill-buffer-hook
+                  (lambda () (setq file-at-kill agent-shell--transcript-file))
+                  nil t))
+      (agent-shell-side-tests--with-delete-session 'failed
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+          (with-current-buffer side
+            (agent-shell-side-dismiss))))
+      (should-not (buffer-live-p side))
+      ;; The session is still there, so its transcript is still worth having.
+      (should (equal file-at-kill "/tmp/side.md")))))
+
+(ert-deftest agent-shell-side-test-dismiss-skips-delete-the-agent-cannot-do ()
+  "An agent that says it cannot delete is not asked, and the close is immediate."
+  (agent-shell-side-tests--with-parent
+    (let ((side (agent-shell-side-tests--start-side parent))
+          (agent-shell-side-on-dismiss 'delete)
+          (messages nil))
+      (with-current-buffer side
+        (setf (alist-get :supports-session-delete agent-shell--state) nil))
+      (agent-shell-side-tests--with-delete-session 'deleted
+        (cl-letf (((symbol-function 'pop-to-buffer) #'ignore)
+                  ((symbol-function 'message)
+                   (lambda (format &rest args)
+                     (push (apply #'format-message format args) messages))))
+          (with-current-buffer side
+            (agent-shell-side-dismiss)))
+        (should-not (buffer-live-p side))
+        (should-not deleted-calls)
+        (should-not acp-test-sent-requests)
+        (should (seq-find (lambda (line) (string-match-p "cannot delete" line))
+                          messages))))))
+
 (ert-deftest agent-shell-side-test-dismiss-from-parent ()
   "Dismissing works from the parent buffer too."
   (agent-shell-side-tests--with-parent

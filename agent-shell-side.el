@@ -873,28 +873,32 @@ the buffer has to be current for it."
 
 ON-DONE runs on success, on failure, and after
 `agent-shell-side-delete-timeout' seconds, so an agent that never answers
-cannot leave the buffer unclosable."
+cannot leave the buffer unclosable.  An agent that said it cannot delete
+sessions is not asked, and ON-DONE runs at once."
   (let ((client (ignore-errors (agent-shell-side-compat-client side-buffer)))
         (session-id (agent-shell-side--session-id side-buffer))
         (settled nil))
-    (if (not (and client session-id))
-        (funcall on-done)
+    (cond
+     ((not (and client session-id))
+      (funcall on-done))
+     ((agent-shell-side-compat-cannot-delete-p side-buffer)
+      (message "agent-shell-side: this agent cannot delete sessions; %s stays in its store"
+               session-id)
+      (funcall on-done))
+     (t
       (let ((finish (lambda (&rest _)
                       (unless settled
                         (setq settled t)
                         (funcall on-done)))))
         (condition-case err
             (progn
-              (acp-send-request
-               :client client
-               :request (acp-make-session-delete-request :session-id session-id)
-               :on-success finish
-               :on-failure finish)
+              (agent-shell-side-compat-delete-session
+               side-buffer session-id finish finish)
               (run-at-time agent-shell-side-delete-timeout nil finish))
           (error
            (message "agent-shell-side: could not delete session %s (%s)"
                     session-id (error-message-string err))
-           (funcall finish)))))))
+           (funcall finish))))))))
 
 (defun agent-shell-side--record-link (side-buffer)
   "Remember SIDE-BUFFER's session as a side conversation of its parent."

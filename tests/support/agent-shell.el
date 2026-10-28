@@ -16,6 +16,7 @@
   "Non-nil when the agent-shell test stub is loaded.")
 
 (defvar agent-shell--state nil)
+(defvar-local agent-shell--transcript-file nil)
 (defvar agent-shell-agent-configs nil)
 (defvar agent-shell-outgoing-request-decorator nil)
 
