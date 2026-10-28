@@ -738,6 +738,60 @@ would otherwise take it down with the buffer."
                            (:data . ((:message . "boom"))))))
       (should (buffer-live-p side)))))
 
+;;; Forking up to the message at point
+
+(defmacro agent-shell-side-tests--with-message-at-point (message-id &rest body)
+  "Run BODY with agent-shell reporting MESSAGE-ID as the message at point."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'agent-shell--message-id-at-point)
+              (lambda () ,message-id)))
+     ,@body))
+
+(ert-deftest agent-shell-side-test-plain-side-passes-no-fork-point ()
+  "A plain side never names a fork point, which upstream would reject."
+  (agent-shell-side-tests--with-parent
+    (agent-shell-side-tests--open-side parent)
+    (should agent-shell-test-started)
+    (should-not (map-elt agent-shell-test-started :fork-message-id-passed))))
+
+(ert-deftest agent-shell-side-test-at-point-forks-up-to-the-message ()
+  "The side's fork stops at the agent message point is on."
+  (agent-shell-side-tests--with-parent
+    (with-current-buffer parent
+      (setf (alist-get :supports-fork-point agent-shell--state) t))
+    (agent-shell-side-tests--with-message-at-point "msg-7"
+      (let ((side (with-current-buffer parent
+                    (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                      (call-interactively #'agent-shell-side-at-point)))))
+        (should (buffer-live-p side))
+        (should (agent-shell-side-buffer-p side))
+        (should (equal (map-elt agent-shell-test-started :fork-session-id)
+                       "parent-1"))
+        (should (equal (map-elt agent-shell-test-started :fork-message-id)
+                       "msg-7"))))))
+
+(ert-deftest agent-shell-side-test-at-point-refuses-without-the-extension ()
+  "An agent that cannot fork from a message is refused before anything starts.
+
+It would ignore the fork point and hand back the whole conversation."
+  (agent-shell-side-tests--with-parent
+    (agent-shell-side-tests--with-message-at-point "msg-7"
+      (with-current-buffer parent
+        (should-error (call-interactively #'agent-shell-side-at-point)
+                      :type 'user-error)))
+    (should-not agent-shell-test-started)))
+
+(ert-deftest agent-shell-side-test-at-point-refuses-off-a-message ()
+  "With no agent message at point there is nothing to fork up to."
+  (agent-shell-side-tests--with-parent
+    (with-current-buffer parent
+      (setf (alist-get :supports-fork-point agent-shell--state) t))
+    (agent-shell-side-tests--with-message-at-point nil
+      (with-current-buffer parent
+        (should-error (call-interactively #'agent-shell-side-at-point)
+                      :type 'user-error)))
+    (should-not agent-shell-test-started)))
+
 ;;; Dismissal
 
 (defun agent-shell-side-tests--start-side (parent)

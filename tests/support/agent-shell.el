@@ -236,12 +236,18 @@ its side conversation can differ."
 
 (cl-defun agent-shell--start (&key config no-focus new-session session-strategy
                                    session-id fork-session-id
+                                   (fork-message-id nil fork-message-id-p)
                                    outgoing-request-decorator)
-  "Record a fork start request and return a fresh shell buffer."
+  "Record a fork start request and return a fresh shell buffer.
+
+Whether `:fork-message-id' was passed at all is recorded too: only the
+liaowang11 fork accepts it, and upstream rejects the keyword outright."
   (ignore no-focus new-session session-strategy session-id)
   (setq agent-shell-test-started
         (list (cons :config config)
               (cons :fork-session-id fork-session-id)
+              (cons :fork-message-id fork-message-id)
+              (cons :fork-message-id-passed fork-message-id-p)
               (cons :outgoing-request-decorator outgoing-request-decorator)))
   (let ((buffer (generate-new-buffer " *agent-shell side test child*")))
     (with-current-buffer buffer

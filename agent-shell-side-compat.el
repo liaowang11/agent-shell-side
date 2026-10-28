@@ -43,6 +43,7 @@
 (declare-function agent-shell--start "agent-shell")
 (declare-function agent-shell--insert-to-shell-buffer "agent-shell")
 (declare-function agent-shell--delete-session "agent-shell")
+(declare-function agent-shell--message-id-at-point "agent-shell")
 (declare-function acp-send-request "acp")
 (declare-function acp-make-session-delete-request "acp")
 (declare-function agent-shell-viewport--show-buffer "agent-shell-viewport")
@@ -54,6 +55,10 @@
 (defvar agent-shell--state)
 (defvar agent-shell--transcript-file)
 (defvar agent-shell-prefer-viewport-interaction)
+
+(defconst agent-shell-side-compat--fork-point-hint
+  "forking up to a message needs the liaowang11 fork of agent-shell"
+  "Suffix for errors raised when `agent-shell' cannot fork up to a message.")
 
 (defconst agent-shell-side-compat--upgrade-hint
   "agent-shell-side needs agent-shell 0.74 or newer"
@@ -142,12 +147,15 @@ otherwise recreate on the next notification to arrive."
 
 (cl-defun agent-shell-side-compat-start-fork (&key config
                                                    fork-session-id
+                                                   fork-message-id
                                                    outgoing-request-decorator)
   "Start a background shell forking FORK-SESSION-ID, and return its buffer.
 
 CONFIG is an agent config alist as built by
 `agent-shell-make-agent-config'.  OUTGOING-REQUEST-DECORATOR is passed
-through to the ACP client.
+through to the ACP client.  FORK-MESSAGE-ID, when non-nil, forks up to
+that message instead of the latest turn; only the liaowang11 fork of
+`agent-shell' takes it, so it is not passed at all when nil.
 
 Mirrors what `agent-shell-fork' does, but with a caller-supplied config
 and decorator.
@@ -161,17 +169,42 @@ version it points to."
     (error "Missing agent-shell--start; %s"
            agent-shell-side-compat--upgrade-hint))
   (condition-case err
-      (agent-shell--start :config config
-                          :session-strategy 'new
-                          :fork-session-id fork-session-id
-                          :new-session t
-                          :no-focus t
-                          :outgoing-request-decorator outgoing-request-decorator)
+      (apply #'agent-shell--start
+             :config config
+             :session-strategy 'new
+             :fork-session-id fork-session-id
+             :new-session t
+             :no-focus t
+             :outgoing-request-decorator outgoing-request-decorator
+             (when fork-message-id
+               (list :fork-message-id fork-message-id)))
     (error
-     (if (string-match-p "fork-session-id" (error-message-string err))
-         (error "Rejected :fork-session-id in agent-shell--start; %s"
-                agent-shell-side-compat--upgrade-hint)
-       (signal (car err) (cdr err))))))
+     (cond
+      ((string-match-p "fork-message-id" (error-message-string err))
+       (error "Rejected :fork-message-id in agent-shell--start; %s"
+              agent-shell-side-compat--fork-point-hint))
+      ((string-match-p "fork-session-id" (error-message-string err))
+       (error "Rejected :fork-session-id in agent-shell--start; %s"
+              agent-shell-side-compat--upgrade-hint))
+      (t (signal (car err) (cdr err)))))))
+
+(defun agent-shell-side-compat-supports-fork-point-p (shell-buffer)
+  "Return non-nil when SHELL-BUFFER's agent can fork up to a past message.
+
+Recorded at `initialize' by the liaowang11 fork of `agent-shell', from
+claude-agent-acp's AIR extension.  Any other `agent-shell' records
+nothing, which reads as no."
+  (and (map-elt (agent-shell-side-compat--state shell-buffer)
+                :supports-fork-point)
+       t))
+
+(defun agent-shell-side-compat-message-id-at-point ()
+  "Return the ACP `messageId' of the agent message at point, or nil.
+
+Works in a shell or a viewport buffer.  nil, too, when `agent-shell'
+does not stamp message ids, which only the liaowang11 fork does."
+  (when (fboundp 'agent-shell--message-id-at-point)
+    (agent-shell--message-id-at-point)))
 
 (defun agent-shell-side-compat-viewport-buffer-p (&optional buffer)
   "Return non-nil when BUFFER, or the current one, is a viewport buffer."

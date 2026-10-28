@@ -34,6 +34,7 @@ name, so it can be told apart in buffer lists.
 | Command | Key (in linked buffers) | What it does |
 | --- | --- | --- |
 | `agent-shell-side` | | Fork this conversation into a side one and switch to it |
+| `agent-shell-side-at-point` | | Fork the conversation only up to the agent message at point (liaowang11 agent-shell fork, claude-agent-acp) |
 | `agent-shell-side-toggle` | `C-c C-b` | Move between the side conversation and its parent |
 | `agent-shell-side-conclude` | `C-c C-q` | Summarise the side conversation into the parent, then close it |
 | `agent-shell-side-send-region` | `C-c C-r` | Quote the region into the other end's compose buffer; with a prefix argument, pick any open side conversation |
@@ -71,6 +72,17 @@ side conversation that is open, asking which when there are several. A shell
 links to one side conversation at a time, so with a prefix argument it asks
 too, offering every open one. The side keys are off in viewport buffers, so
 from a viewport run it with `M-x`.
+
+### Asking from an earlier point
+
+`agent-shell-side-at-point` forks only up to the agent message point is on, so
+the side conversation does not know what came after it: ask about an earlier
+answer without the later turns steering the reply. A selection is quoted into
+its compose buffer, as for `agent-shell-side`. It needs the
+[liaowang11 fork](https://github.com/liaowang11/agent-shell) of agent-shell,
+which records where each agent message is, and an agent with claude-agent-acp's
+fork-point extension. Any other agent is refused, because it would ignore the
+fork point and hand back the whole conversation.
 
 ### Carrying findings back
 

@@ -47,6 +47,7 @@
 ;; Usage:
 ;;
 ;;   M-x agent-shell-side              ; fork this conversation into a side one
+;;   M-x agent-shell-side-at-point     ; fork it only up to the message at point
 ;;   C-c C-b                           ; switch between side and parent
 ;;   C-c C-k                           ; close the side conversation
 ;;   M-x agent-shell-side-resume       ; reopen a kept side conversation
@@ -1098,6 +1099,13 @@ cannot be forked leaves the selection in place to send elsewhere."
                       (list nil (when-let* ((text (agent-shell-side--region-text))
                                             ((not (string-blank-p text))))
                                   text))))
+  (agent-shell-side--open message quote))
+
+(defun agent-shell-side--open (message quote &optional message-id)
+  "Fork the conversation here into a side one, as `agent-shell-side' does.
+
+MESSAGE and QUOTE are as there.  MESSAGE-ID, when non-nil, forks up to
+that agent message instead of the latest turn."
   (let* ((parent-buffer (agent-shell-side--forkable-parent))
          (parent-session-id (agent-shell-side--session-id parent-buffer))
          (parent-config (agent-shell-get-config parent-buffer))
@@ -1108,6 +1116,7 @@ cannot be forked leaves the selection in place to send elsewhere."
                                   parent-config
                                   (agent-shell-side--session-title message))
                          :fork-session-id parent-session-id
+                         :fork-message-id message-id
                          :outgoing-request-decorator
                          (agent-shell-side--make-decorator
                           agent-shell-outgoing-request-decorator))))
@@ -1125,6 +1134,34 @@ cannot be forked leaves the selection in place to send elsewhere."
         (let ((agent-shell-display-action agent-shell-side-display-action))
           (agent-shell-side--compose-quote side-buffer quote)))
       side-buffer)))
+
+;;;###autoload
+(defun agent-shell-side-at-point (&optional quote)
+  "Fork this conversation up to the agent message at point into a side one.
+
+Like `agent-shell-side', but the side conversation's history stops right
+after the message point is on, so it does not know what came later.  An
+active region is quoted into its compose buffer, as there.
+
+Needs the liaowang11 fork of `agent-shell' and an agent with
+claude-agent-acp's fork-point extension.  Any other agent is refused: it
+would ignore the fork point and hand back the whole conversation, which
+only shows turns later.  Works from a shell or a viewport buffer."
+  (interactive
+   (let ((parent (agent-shell-side--forkable-parent)))
+     (unless (agent-shell-side-compat-supports-fork-point-p parent)
+       (user-error "This agent cannot fork from a specific message"))
+     (unless (agent-shell-side-compat-message-id-at-point)
+       (user-error "No agent message at point to fork from"))
+     (list (when-let* ((text (agent-shell-side--region-text))
+                       ((not (string-blank-p text))))
+             text))))
+  (let ((message-id (or (agent-shell-side-compat-message-id-at-point)
+                        (user-error "No agent message at point to fork from"))))
+    (unless (agent-shell-side-compat-supports-fork-point-p
+             (agent-shell-side--forkable-parent))
+      (user-error "This agent cannot fork from a specific message"))
+    (agent-shell-side--open nil quote message-id)))
 
 ;;;###autoload
 (defun agent-shell-side-toggle ()
