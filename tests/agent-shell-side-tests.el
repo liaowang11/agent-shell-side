@@ -2335,6 +2335,9 @@ flips a compose buffer to view mode."
                 (with-current-buffer side-viewport
                   (agent-shell-side-dismiss)))
               (should-not (buffer-live-p side))
+              (should-not (window-live-p side-window))
+              (should (equal (length (window-list)) 1))
+              (should (eq (window-buffer parent-window) parent-viewport))
               (should (eq (selected-window) parent-window))
               (should-not agent-shell-test-viewport-shown)))
         (agent-shell-side-tests--reset-windows)))))

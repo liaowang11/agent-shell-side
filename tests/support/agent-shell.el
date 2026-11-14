@@ -93,6 +93,12 @@ the stub always switches, since no test turns on that difference."
                   shell-buffer))
             (buffer-list)))
 
+(defun agent-shell-test--kill-viewport ()
+  "Kill the current stub shell's viewport, as the real `agent-shell--clean-up' does."
+  (when-let* ((viewport (agent-shell-viewport--buffer
+                         :shell-buffer (current-buffer) :existing-only t)))
+    (kill-buffer viewport)))
+
 (cl-defun agent-shell-viewport--show-buffer (&rest args
                                              &key shell-buffer submit no-focus
                                              append edit disposition
@@ -119,6 +125,9 @@ buffer and the inserted span."
                       (with-current-buffer buffer
                         (agent-shell-viewport-edit-mode)
                         (setq-local agent-shell-test-viewport-shell shell-buffer))
+                      (with-current-buffer shell-buffer
+                        (add-hook 'kill-buffer-hook
+                                  #'agent-shell-test--kill-viewport nil t))
                       buffer))))
     (let ((start nil)
           (end nil))

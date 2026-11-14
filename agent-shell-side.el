@@ -1064,7 +1064,7 @@ it over would show the parent twice, and given to PARENT otherwise.
 Whether the parent is on screen is decided before the kill, because
 afterwards the window shows some previous buffer, possibly the parent.
 With PARENT nil the window is left to Emacs."
-  (let ((window (get-buffer-window side-buffer))
+  (let ((window (agent-shell-side--window side-buffer))
         (parent-shown (and parent (agent-shell-side--window parent))))
     (kill-buffer side-buffer)
     (when (and parent (window-live-p window))
