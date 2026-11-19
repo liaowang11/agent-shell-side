@@ -13,6 +13,9 @@
 
 ;; Ask a quick question without derailing the conversation you are in.
 ;;
+;; Experimental, and under active development.  Command names, options, and
+;; the boundary instruction text can change without a deprecation period.
+;;
 ;; `agent-shell-side' forks the current session into a second shell whose
 ;; inherited history is demoted to reference material.  The agent can still
 ;; read everything that came before, so the question needs no re-explaining,
